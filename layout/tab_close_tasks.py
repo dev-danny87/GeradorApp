@@ -65,6 +65,16 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
     btn_pick_file = ft.ElevatedButton("Adicionar Evidências", icon=ft.Icons.ADD_PHOTO_ALTERNATE, on_click=lambda _: file_picker.pick_files(allow_multiple=True))
     btn_close_task = ft.ElevatedButton("Finalizar Subtarefa Escolhida", icon=ft.Icons.DONE, color="white", bgcolor="green", visible=False)
 
+    txt_notas = ft.TextField(
+        label="Notas",
+        multiline=True,
+        min_lines=3,
+        max_lines=5,
+        width=600,
+        icon=ft.Icons.NOTE,
+        visible=False,
+    )
+
     user_header = ft.Row([
         ft.Icon(ft.Icons.PERSON, color="green", size=20),
         lbl_logged_in,
@@ -87,6 +97,7 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
         ft.Divider(height=15, color="transparent"),
         dropdown_subtasks,
         upload_container,
+        txt_notas,
         lbl_form_error,
         ft.Row([btn_close_task], alignment=ft.MainAxisAlignment.END)
     ], alignment=ft.MainAxisAlignment.START, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=15, expand=True)
@@ -102,6 +113,8 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
             txt_parent_id.value = ""
             dropdown_subtasks.visible = False
             upload_container.visible = False
+            txt_notas.visible = False
+            txt_notas.value = ""
             btn_close_task.visible = False
             selected_files.clear()
             update_file_list_ui()
@@ -122,6 +135,7 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
                 dropdown_subtasks.options = [ft.dropdown.Option(key=s["id"], text=f"{s['id']} - {s['title']}") for s in subs]
                 dropdown_subtasks.visible = True
                 upload_container.visible = True
+                txt_notas.visible = True
                 btn_close_task.visible = True
                 lbl_form_error.visible = False
             else:
@@ -149,7 +163,16 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
         selected_files.clear()
         update_file_list_ui()
 
-        Thread(target=close_single_subtask, args=(app_state["session"], sub_id, files_to_upload), daemon=True).start()
+        Thread(
+            target=close_single_subtask,
+            kwargs={
+                "session": app_state["session"],
+                "sub_id": sub_id,
+                "files_list": files_to_upload,
+                "notas": txt_notas.value or "",
+            },
+            daemon=True,
+        ).start()
 
     btn_search.on_click = handle_search
     btn_close_task.on_click = handle_close

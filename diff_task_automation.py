@@ -1,29 +1,14 @@
-import os
 import requests
 from bs4 import BeautifulSoup
 import datetime
-from dotenv import load_dotenv
 
 from redmine_mappings import LOGIN_TO_USER_ID
+from utils.redmine_version import get_dynamic_version
 
-load_dotenv()
-BASE_URL = "[https://redmine.ssp.go.gov.br](https://redmine.ssp.go.gov.br)"
-
+BASE_URL = "https://redmine.ssp.go.gov.br"
 
 def _timestamp() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def get_dynamic_version(base_version: str) -> str:
-    starting_date_str = os.getenv("STARTING_DATE")
-    if not starting_date_str or not base_version:
-        return base_version
-
-    start_dt = datetime.datetime.strptime(starting_date_str, "%Y-%m-%d")
-    now = datetime.datetime.now()
-    months_diff = (now.year - start_dt.year) * 12 + (now.month - start_dt.month)
-    new_version = int(base_version) + (months_diff * 4)
-    return str(new_version)
 
 
 def _get_issue_token(session):
@@ -44,7 +29,8 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
 
     if not user_id:
         print(f"[{_timestamp()}] [ERRO] O usuário '{username}' não tem um ID mapeado em LOGIN_TO_USER_ID!")
-        print(f"[{_timestamp()}] [ERRO] O Redmine vai rejeitar a tarefa porque o Atribuído ficará vazio.")
+        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Atribuído para' é obrigatório no Redmine.")
+        return
 
     try:
         data_obj = datetime.datetime.strptime(start_date, "%Y-%m-%d")
@@ -67,9 +53,8 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
     print(f"[{_timestamp()}] ===============================================")
 
     try:
-        base_starting_versao = os.getenv("STARTING_VERSAO", "489")
-        dynamic_parent_versao = get_dynamic_version(base_starting_versao)
-        dynamic_sub_versao = get_dynamic_version(base_starting_versao)
+        dynamic_parent_versao = get_dynamic_version()
+        dynamic_sub_versao = get_dynamic_version()
 
         # 1. CRIAR TAREFA PAI
         parent_token = _get_issue_token(session)
@@ -117,7 +102,11 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
             err_div = soup_erro.find("div", id="errorExplanation")
             if err_div:
                 texto_erro = err_div.get_text(separator=' | ', strip=True)
-                print(f"[{_timestamp()}] [FALHA] Tarefa Pai recusada: {texto_erro}")
+                print(f"[{_timestamp()}] [FALHA] Tarefa Pai recusada pelo Redmine: {texto_erro}")
+            else:
+                print(f"[{_timestamp()}] [FALHA] Falha Crítica na Tarefa Pai! HTTP Status: {r_parent.status_code}")
+                # Imprime os primeiros 300 caracteres para te dar uma dica do erro real (ex: permissão negada)
+                print(f"[{_timestamp()}] [HTML BRUTO]: {r_parent.text[:300].strip()}")
             return
 
         # 2. CRIAR SUBTAREFAS

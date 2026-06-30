@@ -90,7 +90,7 @@ def fetch_active_projects(username: str, start_date_str: str, end_date_str: str)
         raise e
 
 
-def extract_project_diff_for_day(author: str, target_date_str: str, project_ids: list) -> str:
+def extract_project_diff_for_day(author: str, target_date_str: str, project_ids: list) -> str | None:
     """
     Gera o diff acumulado de commits criados pelo autor em uma data específica,
     restringindo a pesquisa exclusivamente ao subconjunto de IDs informados.
@@ -150,7 +150,7 @@ def extract_project_diff_for_day(author: str, target_date_str: str, project_ids:
                 combined_diff += "\n" + ("-" * 50) + "\n\n"
 
         if total_commits_found == 0:
-            return f"Nenhum commit atrelado a '{author}' foi encontrado nos projetos selecionados neste dia.\n"
+            return None
 
         return combined_diff
 

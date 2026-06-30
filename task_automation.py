@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import datetime
 
 from redmine_mappings import LOGIN_TO_USER_ID
+from utils.redmine_version import get_dynamic_version
 
 BASE_URL = "https://redmine.ssp.go.gov.br"
 
@@ -24,8 +25,47 @@ def _get_issue_token(session):
     return token_tag.get("value")
 
 
-def create_redmine_issue(session, start_date, due_date, username, subtasks_list):
+def _custom_fields_payload(
+        sistema: str,
+        orgao_solicitante: str,
+        atribuicao_catalogo: str,
+        projeto_vinculado: str,
+        notas: str,
+) -> dict:
+    payload = {
+        "issue[custom_field_values][6]": sistema,
+        "issue[custom_field_values][3]": orgao_solicitante,
+        "issue[custom_field_values][22]": atribuicao_catalogo,
+        "issue[custom_field_values][27]": projeto_vinculado,
+    }
+    if notas.strip():
+        payload["issue[notes]"] = notas.strip()
+    return payload
+
+
+def create_redmine_issue(
+        session,
+        start_date,
+        due_date,
+        username,
+        subtasks_list,
+        *,
+        sistema="SICOR",
+        orgao_solicitante="PM",
+        atribuicao_catalogo="Desenvolvedor Sênior",
+        projeto_vinculado="SICOR",
+        notas="",
+        versao=None,
+):
     user_id = LOGIN_TO_USER_ID.get(username, "")
+
+    fixed_version_id = versao or get_dynamic_version()
+
+    # CORREÇÃO 1: Evitar submissão se o ID do usuário for inválido/vazio
+    if not user_id:
+        print(f"[{_timestamp()}] [ERRO] O usuário '{username}' não tem um ID mapeado em LOGIN_TO_USER_ID!")
+        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Atribuído para' é obrigatório no Redmine.")
+        return
 
     try:
         data_obj = datetime.datetime.strptime(start_date, "%Y-%m-%d")
@@ -45,6 +85,7 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
 
     print(f"\n[{_timestamp()}] ===============================================")
     print(f"[{_timestamp()}] INICIANDO CRIAÇÃO: {subject_dinamico}")
+    print(f"[{_timestamp()}] Versão (fixed_version_id): {fixed_version_id}")
     print(f"[{_timestamp()}] ===============================================")
 
     try:
@@ -66,7 +107,7 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
             "was_default_status": "1",
             "issue[priority_id]": "4",
             "issue[assigned_to_id]": user_id,
-            "issue[fixed_version_id]": "485",
+            "issue[fixed_version_id]": fixed_version_id,
             "issue[parent_issue_id]": "",
             "issue[start_date]": start_date,
             "issue[due_date]": due_date,
@@ -74,16 +115,15 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
             "issue[custom_field_values][5]": user_id,
             "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
             "issue[custom_field_values][2]": "JAVA",
-            "issue[custom_field_values][6]": "SICOR",
-            "issue[custom_field_values][3]": "PM",
             "issue[custom_field_values][4]": "ordem verbal",
             "issue[custom_field_values][7]": "0",
             "issue[custom_field_values][8]": "0",
-            "issue[custom_field_values][22]": "Desenvolvedor Sênior",
-            "issue[custom_field_values][27]": "SICOR",
             "issue[watcher_user_ids][]": "",
             "commit": "Criar"
         }
+        parent_payload.update(
+            _custom_fields_payload(sistema, orgao_solicitante, atribuicao_catalogo, projeto_vinculado, notas)
+        )
 
         url_post = f"{BASE_URL}/projects/item-01-inovacao/issues"
         r_parent = session.post(url_post, data=parent_payload, allow_redirects=True)
@@ -92,7 +132,15 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
             parent_id = r_parent.url.split("?")[0].split("/")[-1]
             print(f"[{_timestamp()}] [OK] TAREFA PAI CRIADA! ID: {parent_id} - URL: {r_parent.url}")
         else:
-            print(f"[{_timestamp()}] [FALHA] Não foi possível criar a Tarefa Pai.")
+            # CORREÇÃO 2: Extrair e mostrar o erro real da Tarefa Pai
+            soup_erro = BeautifulSoup(r_parent.text, "html.parser")
+            err_div = soup_erro.find("div", id="errorExplanation")
+            if err_div:
+                texto_erro = err_div.get_text(separator=' | ', strip=True)
+                print(f"[{_timestamp()}] [FALHA] Tarefa Pai recusada pelo Redmine: {texto_erro}")
+            else:
+                print(f"[{_timestamp()}] [FALHA] Falha Crítica na Tarefa Pai! HTTP Status: {r_parent.status_code}")
+                print(f"[{_timestamp()}] [HTML BRUTO]: {r_parent.text[:300].strip()}")
             return
 
         # -------------------------------------------------------------
@@ -105,10 +153,19 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
                 try:
                     sub_token = _get_issue_token(session)
 
-                    sub_title = subtask.get("title", f"Subtarefa {index + 1}")
-                    sub_desc = subtask.get("description", "")
-                    sub_start = subtask.get("start_date", "")
-                    sub_due = subtask.get("due_date", "")
+                    sub_title = subtask.get("task_title") or subtask.get("title", f"Subtarefa {index + 1}")
+                    category = subtask.get("category", "Feature")
+                    base_desc = subtask.get("description", "")
+                    if category and "**Categoria:**" not in base_desc:
+                        sub_desc = (
+                            f"{base_desc}\n\n**Categoria:** {category.capitalize()}"
+                            if base_desc
+                            else f"**Categoria:** {category.capitalize()}"
+                        )
+                    else:
+                        sub_desc = base_desc
+                    sub_start = subtask.get("start_date") or start_date
+                    sub_due = subtask.get("due_date") or due_date
                     sub_hours = subtask.get("estimated_hours", "")
 
                     sub_payload = {
@@ -124,7 +181,7 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
                         "was_default_status": "1",
                         "issue[priority_id]": "2",
                         "issue[assigned_to_id]": user_id,
-                        "issue[fixed_version_id]": "485",
+                        "issue[fixed_version_id]": fixed_version_id,
                         "issue[parent_issue_id]": parent_id,
                         "issue[start_date]": sub_start,
                         "issue[due_date]": sub_due,
@@ -132,16 +189,17 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
                         "issue[custom_field_values][5]": user_id,
                         "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
                         "issue[custom_field_values][2]": "JAVA",
-                        "issue[custom_field_values][6]": "SICOR",
-                        "issue[custom_field_values][3]": "PM",
                         "issue[custom_field_values][4]": "ordem verbal",
                         "issue[custom_field_values][7]": "0",
                         "issue[custom_field_values][8]": "0",
-                        "issue[custom_field_values][22]": "Desenvolvedor Sênior",
-                        "issue[custom_field_values][27]": "SICOR",
                         "issue[watcher_user_ids][]": "",
                         "commit": "Criar"
                     }
+                    sub_payload.update(
+                        _custom_fields_payload(
+                            sistema, orgao_solicitante, atribuicao_catalogo, projeto_vinculado, notas
+                        )
+                    )
 
                     checklists = subtask.get("checklists", [])
                     for i, chk in enumerate(checklists):
@@ -158,7 +216,15 @@ def create_redmine_issue(session, start_date, due_date, username, subtasks_list)
                         sub_id = r_sub.url.split("?")[0].split("/")[-1]
                         print(f"[{_timestamp()}]  -> [OK] Subtarefa '{sub_title}' criada! ID: {sub_id} ({sub_hours}h)")
                     else:
-                        print(f"[{_timestamp()}]  -> [FALHA] Não foi possível criar a subtarefa: {sub_title}")
+                        # CORREÇÃO 3: Mostrar o erro real das Subtarefas
+                        soup_sub_erro = BeautifulSoup(r_sub.text, "html.parser")
+                        sub_err_div = soup_sub_erro.find("div", id="errorExplanation")
+                        if sub_err_div:
+                            texto_erro_sub = sub_err_div.get_text(separator=' | ', strip=True)
+                            print(f"[{_timestamp()}]  -> [FALHA] {texto_erro_sub}")
+                        else:
+                            print(
+                                f"[{_timestamp()}]  -> [FALHA] HTTP Status: {r_sub.status_code} | HTML: {r_sub.text[:100].strip()}")
 
                 except Exception as ex_sub:
                     print(f"[{_timestamp()}]  -> [ERRO] Falha interna na subtarefa '{sub_title}': {ex_sub}")
@@ -205,7 +271,7 @@ def get_redmine_subtasks(session, parent_id):
         return []
 
 
-def close_single_subtask(session, sub_id, files_list):
+def close_single_subtask(session, sub_id, files_list, notas=""):
     import urllib.parse
     import mimetypes
     import re
@@ -263,7 +329,7 @@ def close_single_subtask(session, sub_id, files_list):
         ignorar_nomes = [
             "utf8", "_method", "authenticity_token", "form_update_triggered_by",
             "issue[status_id]", "time_entry[hours]", "time_entry[activity_id]",
-            "commit", "issue[lock_version]", "time_entry[comments]"
+            "commit", "issue[lock_version]", "time_entry[comments]", "issue[notes]",
         ]
 
         for elem in form.find_all(["input", "select", "textarea"]):
@@ -344,6 +410,8 @@ def close_single_subtask(session, sub_id, files_list):
                 ])
 
         payload_list.append(("attachments[dummy][file]", ""))
+        if notas.strip():
+            payload_list.append(("issue[notes]", notas.strip()))
         payload_list.append(("commit", "Enviar"))
 
         update_url = f"{BASE_URL}/issues/{sub_id}"

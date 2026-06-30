@@ -8,7 +8,7 @@ from threading import Thread
 # Presumindo que estes existam no seu projeto
 from utils.ui_components import DatePickerField
 from services.gitlab_service import fetch_active_projects, extract_project_diff_for_day
-from services.ai_api_request import analyze_diffs_sequential_with_claude, MODEL_CONFIGS
+from services.ai_api_request import analyze_diffs_grouped_with_claude, MODEL_CONFIGS
 from diff_task_automation import create_ai_redmine_tasks
 
 
@@ -144,8 +144,13 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
     diffs_view = ft.Column([
         user_header,
         ft.Text("Extração de Modificações por Repositório Escolhido", size=16, weight=ft.FontWeight.BOLD),
-        txt_author,
-        ft.Row([date_start, date_end], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
+        ft.Row([txt_author], alignment=ft.MainAxisAlignment.CENTER),
+        ft.Row(
+            [date_start, date_end],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=20,
+            tight=True,
+        ),
         ft.Row([btn_search_projects, progress_ring], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
         wrapper_projects_box,
         ft.Row([btn_execute_diff], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
@@ -327,6 +332,9 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
                     diffs_view.update()
 
                     diff_content = extract_project_diff_for_day(author, current_date_str, selected_project_ids)
+                    if diff_content is None:
+                        continue
+
                     file_path = os.path.join(output_dir, f"diff_{current_date_str}.txt")
                     with open(file_path, "w", encoding="utf-8") as f:
                         f.write(diff_content)
@@ -365,11 +373,16 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
 
         btn_process_ai.disabled = True
         progress_ring.visible = True
-        show_status(f"Iniciando processamento sequencial ({selected_model})...", "purple")
+        show_status(f"Iniciando processamento agrupado ({selected_model})...", "purple")
         diffs_view.update()
 
         def prepare_directory_for_new_run(folder_path: str):
-            files_to_remove = ["batch_info.json", "ai_tasks_result.jsonl", "ai_tasks_result.json"]
+            files_to_remove = [
+                "batch_info.json",
+                "ai_tasks_result.jsonl",
+                "ai_tasks_result.json",
+                "ai_tasks_checkpoint.json",
+            ]
             for filename in files_to_remove:
                 file_path = os.path.join(folder_path, filename)
                 if os.path.exists(file_path):
@@ -399,11 +412,12 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
                     show_status(f"[{step}/{total}] {message}", "purple")
                     diffs_view.update()
 
-                final_payload = analyze_diffs_sequential_with_claude(
+                final_payload = analyze_diffs_grouped_with_claude(
                     diff_items,
                     total_hours,
                     selected_model,
                     on_progress=on_progress,
+                    output_dir=target_dir,
                 )
 
                 results_file = _results_file_path(folder_name)

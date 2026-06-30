@@ -14,7 +14,8 @@ class DatePickerField(ft.Row):
             on_change=self._handle_date_change,
             first_date=datetime.datetime(2020, 1, 1),
             last_date=datetime.datetime(2030, 12, 31),
-            help_text=f"Selecione: {label}"
+            help_text=f"Selecione: {label}",
+            value=datetime.datetime.combine(default_date, datetime.time()),
         )
 
         # 2. The visible Text Field
@@ -44,10 +45,14 @@ class DatePickerField(ft.Row):
             self.update()
 
     def _open_calendar(self, e):
-        # e.page ensures we can open the dialog without needing to pass the 'page' object everywhere
+        if self.date_picker not in e.page.overlay:
+            e.page.overlay.append(self.date_picker)
         e.page.open(self.date_picker)
+
+    def set_date(self, target_date: datetime.date):
+        self.text_field.value = target_date.strftime("%Y-%m-%d")
+        self.date_picker.value = datetime.datetime.combine(target_date, datetime.time())
 
     @property
     def value(self):
-        # A helper property so you can easily get the value just like a normal TextField
         return self.text_field.value
