@@ -1,0 +1,201 @@
+import os
+import requests
+from bs4 import BeautifulSoup
+import datetime
+from dotenv import load_dotenv
+
+from redmine_mappings import LOGIN_TO_USER_ID
+
+load_dotenv()
+BASE_URL = "[https://redmine.ssp.go.gov.br](https://redmine.ssp.go.gov.br)"
+
+
+def _timestamp() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_dynamic_version(base_version: str) -> str:
+    starting_date_str = os.getenv("STARTING_DATE")
+    if not starting_date_str or not base_version:
+        return base_version
+
+    start_dt = datetime.datetime.strptime(starting_date_str, "%Y-%m-%d")
+    now = datetime.datetime.now()
+    months_diff = (now.year - start_dt.year) * 12 + (now.month - start_dt.month)
+    new_version = int(base_version) + (months_diff * 4)
+    return str(new_version)
+
+
+def _get_issue_token(session):
+    url_new_issue = f"{BASE_URL}/projects/item-01-inovacao/issues/new"
+    r = session.get(url_new_issue, timeout=60)
+    if "/login" in r.url or r.status_code == 403:
+        raise PermissionError("Sua conta não tem permissão no projeto 'item-01-inovacao'.")
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    token_tag = soup.find("input", attrs={"name": "authenticity_token"})
+    if not token_tag:
+        raise ValueError("Token CSRF não encontrado na página de nova tarefa.")
+    return token_tag.get("value")
+
+
+def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list):
+    user_id = LOGIN_TO_USER_ID.get(username, "")
+
+    if not user_id:
+        print(f"[{_timestamp()}] [ERRO] O usuário '{username}' não tem um ID mapeado em LOGIN_TO_USER_ID!")
+        print(f"[{_timestamp()}] [ERRO] O Redmine vai rejeitar a tarefa porque o Atribuído ficará vazio.")
+
+    try:
+        data_obj = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+        mes_numero = data_obj.month
+    except ValueError:
+        mes_numero = datetime.datetime.now().month
+
+    meses_ptbr = {
+        1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO", 4: "ABRIL",
+        5: "MAIO", 6: "JUNHO", 7: "JULHO", 8: "AGOSTO",
+        9: "SETEMBRO", 10: "OUTUBRO", 11: "NOVEMBRO", 12: "DEZEMBRO"
+    }
+    nome_mes = meses_ptbr.get(mes_numero, "MÊS")
+
+    subject_dinamico = f"SICOR - SPRINT {nome_mes}"
+    description_dinamica = f"Planejamento de tarefas técnicas e detalhamento de implementações para a sprint de {nome_mes.lower()} baseadas nos diffs recentes."
+
+    print(f"\n[{_timestamp()}] ===============================================")
+    print(f"[{_timestamp()}] INICIANDO CRIAÇÃO DE TAREFAS: {subject_dinamico}")
+    print(f"[{_timestamp()}] ===============================================")
+
+    try:
+        base_starting_versao = os.getenv("STARTING_VERSAO", "489")
+        dynamic_parent_versao = get_dynamic_version(base_starting_versao)
+        dynamic_sub_versao = get_dynamic_version(base_starting_versao)
+
+        # 1. CRIAR TAREFA PAI
+        parent_token = _get_issue_token(session)
+
+        parent_payload = {
+            "utf8": "✓",
+            "authenticity_token": parent_token,
+            "form_update_triggered_by": "",
+            "issue[is_private]": "0",
+            "issue[project_id]": "16",
+            "issue[tracker_id]": "8",
+            "issue[subject]": subject_dinamico,
+            "issue[description]": description_dinamica,
+            "issue[status_id]": "1",
+            "was_default_status": "1",
+            "issue[priority_id]": "4",
+            "issue[assigned_to_id]": user_id,
+            "issue[fixed_version_id]": dynamic_parent_versao,
+            "issue[parent_issue_id]": "",
+            "issue[start_date]": start_date,
+            "issue[due_date]": due_date,
+            "issue[estimated_hours]": "",
+            "issue[custom_field_values][5]": user_id,
+            "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
+            "issue[custom_field_values][2]": "JAVA",
+            "issue[custom_field_values][6]": "SICOR",
+            "issue[custom_field_values][3]": "PM",
+            "issue[custom_field_values][4]": "ordem verbal",
+            "issue[custom_field_values][7]": "0",
+            "issue[custom_field_values][8]": "0",
+            "issue[custom_field_values][22]": "Desenvolvedor Sênior",
+            "issue[custom_field_values][27]": "SICOR",
+            "issue[watcher_user_ids][]": "",
+            "commit": "Criar"
+        }
+
+        url_post = f"{BASE_URL}/projects/item-01-inovacao/issues"
+        r_parent = session.post(url_post, data=parent_payload, allow_redirects=True)
+
+        if r_parent.status_code == 200 and "/issues/" in r_parent.url and "new" not in r_parent.url:
+            parent_id = r_parent.url.split("?")[0].split("/")[-1]
+            print(f"[{_timestamp()}] [OK] TAREFA PAI CRIADA! ID: {parent_id}")
+        else:
+            soup_erro = BeautifulSoup(r_parent.text, "html.parser")
+            err_div = soup_erro.find("div", id="errorExplanation")
+            if err_div:
+                texto_erro = err_div.get_text(separator=' | ', strip=True)
+                print(f"[{_timestamp()}] [FALHA] Tarefa Pai recusada: {texto_erro}")
+            return
+
+        # 2. CRIAR SUBTAREFAS
+        if tasks_list:
+            print(f"\n[{_timestamp()}] Processando {len(tasks_list)} subtarefas...")
+
+            for index, subtask in enumerate(tasks_list):
+                try:
+                    sub_token = _get_issue_token(session)
+
+                    sub_title = subtask.get("task_title", f"Subtarefa {index + 1}")
+                    category = subtask.get("category", "Feature")
+                    base_desc = subtask.get("description", "Sem descrição detalhada.")
+
+                    sub_desc = f"{base_desc}\n\n**Categoria:** {category.capitalize()}"
+                    sub_hours = subtask.get("estimated_hours", "")
+
+                    sub_payload = {
+                        "utf8": "✓",
+                        "authenticity_token": sub_token,
+                        "form_update_triggered_by": "",
+                        "issue[is_private]": "0",
+                        "issue[project_id]": "16",
+                        "issue[tracker_id]": "8",
+                        "issue[subject]": sub_title,
+                        "issue[description]": sub_desc,
+                        "issue[status_id]": "1",
+                        "was_default_status": "1",
+                        "issue[priority_id]": "2",
+                        "issue[assigned_to_id]": user_id,
+                        "issue[fixed_version_id]": dynamic_sub_versao,
+                        "issue[parent_issue_id]": parent_id,
+                        "issue[start_date]": start_date,
+                        "issue[due_date]": due_date,
+                        "issue[estimated_hours]": str(sub_hours),
+                        "issue[custom_field_values][5]": user_id,
+                        "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
+                        "issue[custom_field_values][2]": "JAVA",
+                        "issue[custom_field_values][6]": "SICOR",
+                        "issue[custom_field_values][3]": "PM",
+                        "issue[custom_field_values][4]": "ordem verbal",
+                        "issue[custom_field_values][7]": "0",
+                        "issue[custom_field_values][8]": "0",
+                        "issue[custom_field_values][22]": "Desenvolvedor Sênior",
+                        "issue[custom_field_values][27]": "SICOR",
+                        "issue[watcher_user_ids][]": "",
+                        "commit": "Criar"
+                    }
+
+                    affected_files = subtask.get("affected_files", [])
+                    for i, file_name in enumerate(affected_files):
+                        sub_payload[f"issue[checklists_attributes][{i}][is_done]"] = "0"
+                        sub_payload[f"issue[checklists_attributes][{i}][subject]"] = f"Modificado: {file_name}"
+                        sub_payload[f"issue[checklists_attributes][{i}][_destroy]"] = "false"
+                        sub_payload[f"issue[checklists_attributes][{i}][position]"] = str(i)
+                        sub_payload[f"issue[checklists_attributes][{i}][is_section]"] = "false"
+                        sub_payload[f"issue[checklists_attributes][{i}][id]"] = ""
+
+                    r_sub = session.post(url_post, data=sub_payload, allow_redirects=True)
+
+                    if r_sub.status_code == 200 and "/issues/" in r_sub.url and "new" not in r_sub.url:
+                        sub_id = r_sub.url.split("?")[0].split("/")[-1]
+                        print(f"[{_timestamp()}]  -> [OK] Subtarefa '{sub_title}' criada! ID: {sub_id} ({sub_hours}h)")
+                    else:
+                        soup_sub_erro = BeautifulSoup(r_sub.text, "html.parser")
+                        sub_err_div = soup_sub_erro.find("div", id="errorExplanation")
+                        if sub_err_div:
+                            texto_erro_sub = sub_err_div.get_text(separator=' | ', strip=True)
+                            print(f"[{_timestamp()}]  -> [FALHA] {texto_erro_sub}")
+                        else:
+                            print(f"[{_timestamp()}]  -> [FALHA] HTTP Status: {r_sub.status_code}")
+
+                except Exception as ex_sub:
+                    print(f"[{_timestamp()}]  -> [ERRO] Falha interna na subtarefa '{sub_title}': {ex_sub}")
+
+        print(f"\n[{_timestamp()}] PROCESSO DE SPRINT CONCLUÍDO!")
+
+    except PermissionError as pe:
+        print(f"[{_timestamp()}] {pe}")
+    except Exception as e:
+        print(f"[{_timestamp()}] ERRO CRÍTICO: {e}")

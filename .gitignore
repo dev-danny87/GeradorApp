@@ -1,0 +1,7 @@
+# Environment
+.env
+
+# Generated output
+diffs/
+Relatórios/
+relatorios/
