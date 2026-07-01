@@ -6,15 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="f1d20883-2c11-4d89-86c3-e6c1f95215f8" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/diff_task_automation.py" beforeDir="false" afterPath="$PROJECT_DIR$/diff_task_automation.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/layout/tab_close_tasks.py" beforeDir="false" afterPath="$PROJECT_DIR$/layout/tab_close_tasks.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/layout/tab_diffs.py" beforeDir="false" afterPath="$PROJECT_DIR$/layout/tab_diffs.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/layout/tab_tasks.py" beforeDir="false" afterPath="$PROJECT_DIR$/layout/tab_tasks.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/redmine_mappings.py" beforeDir="false" afterPath="$PROJECT_DIR$/redmine_mappings.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/services/ai_api_request.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/ai_api_request.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/services/gitlab_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/gitlab_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/task_automation.py" beforeDir="false" afterPath="$PROJECT_DIR$/task_automation.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/utils/ui_components.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/ui_components.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/pge_evidence_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/pge_evidence_service.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -142,7 +135,7 @@
       <workItem from="1770646571863" duration="1188000" />
       <workItem from="1773075025733" duration="590000" />
       <workItem from="1780072346916" duration="71680000" />
-      <workItem from="1782236285168" duration="86810000" />
+      <workItem from="1782236285168" duration="89862000" />
     </task>
     <servers />
   </component>
