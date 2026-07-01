@@ -38,6 +38,11 @@ class DatePickerField(ft.Row):
         # Add them to the Row
         self.controls = [self.text_field, self.btn_calendar]
 
+    def did_mount(self):
+        if self.page and self.date_picker not in self.page.overlay:
+            self.page.overlay.append(self.date_picker)
+            self.page.update()
+
     def _handle_date_change(self, e):
         # Update the text field when a date is selected
         if self.date_picker.value:
@@ -47,6 +52,7 @@ class DatePickerField(ft.Row):
     def _open_calendar(self, e):
         if self.date_picker not in e.page.overlay:
             e.page.overlay.append(self.date_picker)
+            e.page.update()
         e.page.open(self.date_picker)
 
     def set_date(self, target_date: datetime.date):

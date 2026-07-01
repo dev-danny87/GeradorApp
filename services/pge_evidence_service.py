@@ -1,21 +1,26 @@
 import datetime
-import json
 import os
 import re
+import shutil
 import time
 import unicodedata
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin, urlparse, urlencode
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
 from services.auth_service import PGE_BASE_URL
 
+load_dotenv()
+
 PGE_ISSUES_PATH = f"{PGE_BASE_URL}/issues"
 PGE_BASE_PATH = urlparse(PGE_BASE_URL).path.rstrip("/")
+PGE_CF28_ENUMERATIONS_URL = f"{PGE_BASE_URL}/custom_fields/28/enumerations"
 
 # Tracker IDs excluded from filter (Projeto, Ajuste, Task, Falha, Backlog, Mudança de Escopo)
 _EXCLUDED_TRACKERS = ["20", "18", "3", "12", "14", "15"]
@@ -23,6 +28,8 @@ _EXCLUDED_TRACKERS = ["20", "18", "3", "12", "14", "15"]
 _DEFAULT_CF28_OPTIONS = [("ITEM 1 - JUNHO - 2026", "222")]
 
 RELATORIO_PDF_NOME = "Relatório de Atividades Geradas.pdf"
+RELATORIO_INDIVIDUAIS_DIR = "Relatório de Atividades Individuais"
+EVIDENCIAS_DIR = "Evidências"
 TAREFAS_GERAL_NOME = "TAREFAS_GERAL.xlsx"
 TAREFAS_PROCESSADAS_NOME = "TAREFAS_PROCESSADAS.csv"
 
@@ -38,6 +45,22 @@ def set_app_run(value: bool) -> None:
 
 def _timestamp() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _issue_workers() -> int:
+    try:
+        n = int(os.getenv("THREADS", "1"))
+    except ValueError:
+        n = 1
+    return max(1, min(n, 8))
+
+
+def _clone_session(session: requests.Session) -> requests.Session:
+    worker = requests.Session()
+    worker.cookies.update(session.cookies)
+    worker.headers.update(session.headers)
+    worker.verify = session.verify
+    return worker
 
 
 def _http_get(session: requests.Session, url: str, **kwargs) -> requests.Response:
@@ -145,35 +168,70 @@ def build_pge_filter_url(cf_28_id: str) -> str:
     ])
     return f"{PGE_ISSUES_PATH}?{urlencode(params)}"
 
-
 def build_pge_filter_pdf_url(cf_28_id: str) -> str:
     """Builds the PGE issues filter PDF URL (same params as HTML list)."""
     return build_pge_filter_url(cf_28_id).replace("/issues?", "/issues.pdf?", 1)
 
 
-def fetch_cf28_options(session: requests.Session) -> List[Tuple[str, str]]:
-    """Scrapes 'Entregue em' (cf_28) options from the PGE filter page."""
+def _default_cf28_enumerations() -> List[dict]:
+    return [
+        {"id": enum_id, "label": label, "active": True}
+        for label, enum_id in _DEFAULT_CF28_OPTIONS
+    ]
+
+
+def _parse_cf28_enumerations(soup: BeautifulSoup) -> List[dict]:
+    enumerations: List[dict] = []
+    name_pattern = re.compile(r"custom_field_enumerations\[(\d+)\]\[name\]")
+    active_pattern = re.compile(r"custom_field_enumerations\[(\d+)\]\[active\]")
+
+    for li in soup.select("#custom_field_enumerations li"):
+        name_input = li.find("input", attrs={"name": name_pattern})
+        if not name_input:
+            continue
+        match = name_pattern.search(name_input.get("name", ""))
+        if not match:
+            continue
+        enum_id = match.group(1)
+        label = (name_input.get("value") or "").strip()
+        if not label:
+            continue
+
+        active = False
+        active_cb = li.find("input", attrs={"type": "checkbox", "name": active_pattern})
+        if active_cb and active_cb.has_attr("checked"):
+            active = True
+
+        enumerations.append({"id": enum_id, "label": label, "active": active})
+
+    return enumerations
+
+
+def fetch_cf28_enumerations(session: requests.Session) -> List[dict]:
+    """Fetches cf_28 enumeration options from the PGE custom field admin page."""
     try:
-        url = f"{PGE_ISSUES_PATH}?set_filter=1"
-        r = _http_get(session, url)
-        m = re.search(
-            r'"cf_28"\s*:\s*\{[^}]*"values"\s*:\s*(\[\[.*?\]\])',
-            r.text,
-            re.DOTALL,
-        )
-        if not m:
-            print(f"[{_timestamp()}] WARN: cf_28 options not found; using default.")
-            return list(_DEFAULT_CF28_OPTIONS)
+        print(f"[{_timestamp()}] Buscando enumerações cf_28: {PGE_CF28_ENUMERATIONS_URL}")
+        r = _http_get(session, PGE_CF28_ENUMERATIONS_URL)
+        if "/login" in r.url:
+            print(f"[{_timestamp()}] WARN: sessão sem acesso à página de enumerações; usando fallback.")
+            return _default_cf28_enumerations()
 
-        raw = m.group(1)
-        pairs = json.loads(raw)
-        options = [(str(label), str(val)) for label, val in pairs if label and val]
-        if options:
-            return options
+        soup = BeautifulSoup(r.text, "html.parser")
+        enumerations = _parse_cf28_enumerations(soup)
+        if enumerations:
+            print(f"[{_timestamp()}] Enumerações cf_28 carregadas: {len(enumerations)}")
+            return enumerations
+
+        print(f"[{_timestamp()}] WARN: nenhuma enumeração cf_28 encontrada na página; usando fallback.")
     except Exception as e:
-        print(f"[{_timestamp()}] WARN: failed to fetch cf_28 options: {e}")
+        print(f"[{_timestamp()}] WARN: falha ao buscar enumerações cf_28: {e}")
 
-    return list(_DEFAULT_CF28_OPTIONS)
+    return _default_cf28_enumerations()
+
+
+def fetch_cf28_options(session: requests.Session) -> List[Tuple[str, str]]:
+    """Backward-compatible helper returning (label, id) pairs."""
+    return [(e["label"], e["id"]) for e in fetch_cf28_enumerations(session)]
 
 
 def _absolute_url(href: str) -> str:
@@ -449,7 +507,8 @@ def process_issue_page(
     session: requests.Session,
     soup: BeautifulSoup,
     issue_id: str,
-    base_out_dir: str,
+    evidencias_dir: str,
+    individual_pdfs_dir: str,
 ) -> dict:
     catalogo = _extract_catalogo(soup)
     usuario = _extract_assigned_user(soup)
@@ -461,7 +520,7 @@ def process_issue_page(
     issue_url = _issue_url(issue_id)
 
     issue_dir = os.path.join(
-        base_out_dir,
+        evidencias_dir,
         _safe_dirname(catalogo),
         _safe_dirname(usuario),
         issue_id,
@@ -470,6 +529,9 @@ def process_issue_page(
 
     pdf_dest = os.path.join(issue_dir, f"{issue_id}.pdf")
     _download_file(session, pdf_url, pdf_dest)
+    if os.path.isfile(pdf_dest) and os.path.getsize(pdf_dest) > 0:
+        flat_dest = os.path.join(individual_pdfs_dir, f"{issue_id}.pdf")
+        shutil.copy2(pdf_dest, flat_dest)
     _download_issue_attachments(session, soup, issue_dir, issue_id)
 
     print(
@@ -525,7 +587,8 @@ def iterate_issues_via_proxima(
     session: requests.Session,
     first_issue_id: str,
     all_ids: List[str],
-    base_out_dir: str,
+    evidencias_dir: str,
+    individual_pdfs_dir: str,
 ) -> List[dict]:
     """Opens first issue and chains 'Próxima'; falls back to direct visits for missed IDs."""
     visited: List[dict] = []
@@ -547,7 +610,7 @@ def iterate_issues_via_proxima(
             break
 
         if issue_id not in visited_set:
-            row = process_issue_page(session, soup, issue_id, base_out_dir)
+            row = process_issue_page(session, soup, issue_id, evidencias_dir, individual_pdfs_dir)
             visited.append(row)
             visited_set.add(issue_id)
 
@@ -566,10 +629,53 @@ def iterate_issues_via_proxima(
             if not _app_run:
                 break
             soup, _issue_url_direct = _visit_issue_direct(session, issue_id)
-            row = process_issue_page(session, soup, issue_id, base_out_dir)
+            row = process_issue_page(session, soup, issue_id, evidencias_dir, individual_pdfs_dir)
             visited.append(row)
             visited_set.add(issue_id)
 
+    return visited
+
+
+def _process_issue_by_id(
+    base_session: requests.Session,
+    issue_id: str,
+    evidencias_dir: str,
+    individual_pdfs_dir: str,
+) -> Optional[dict]:
+    if not _app_run:
+        return None
+    try:
+        session = _clone_session(base_session)
+        soup, _ = _visit_issue_direct(session, issue_id)
+        return process_issue_page(session, soup, issue_id, evidencias_dir, individual_pdfs_dir)
+    except Exception as e:
+        print(f"[{_timestamp()}] ERROR: issue {issue_id}: {e}")
+        return None
+
+
+def process_issues_parallel(
+    session: requests.Session,
+    all_ids: List[str],
+    evidencias_dir: str,
+    individual_pdfs_dir: str,
+    max_workers: int,
+) -> List[dict]:
+    visited: List[dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _process_issue_by_id, session, issue_id, evidencias_dir, individual_pdfs_dir
+            ): issue_id
+            for issue_id in all_ids
+        }
+        for future in as_completed(futures):
+            if not _app_run:
+                for f in futures:
+                    f.cancel()
+                break
+            row = future.result()
+            if row:
+                visited.append(row)
     return visited
 
 
@@ -639,6 +745,10 @@ def generate_evidences_pge(session, cf_28_id: str, month_label: str) -> None:
     safe_month = re.sub(r'[<>:"/\\|?*]', "_", month_label)[:80]
     base_out_dir = os.path.join(".", "relatorios_pge", safe_month, folder_stamp)
     _safe_mkdir(base_out_dir)
+    evidencias_dir = os.path.join(base_out_dir, EVIDENCIAS_DIR)
+    _safe_mkdir(evidencias_dir)
+    individual_pdfs_dir = os.path.join(base_out_dir, RELATORIO_INDIVIDUAIS_DIR)
+    _safe_mkdir(individual_pdfs_dir)
 
     print(f"\n[{_timestamp()}] Preparando evidências PGE...")
     print(f"Entregue em: {month_label} (cf_28={cf_28_id})")
@@ -654,8 +764,19 @@ def generate_evidences_pge(session, cf_28_id: str, month_label: str) -> None:
 
     print(f"\n[{_timestamp()}] Total de issues na lista: {len(all_ids)}")
 
+    workers = _issue_workers()
+    print(f"[{_timestamp()}] Processando issues com {workers} worker(s)")
+
     first_issue_id = all_ids[0]
-    visited = iterate_issues_via_proxima(session, first_issue_id, all_ids, base_out_dir)
+    if workers == 1:
+        visited = iterate_issues_via_proxima(
+            session, first_issue_id, all_ids, evidencias_dir, individual_pdfs_dir
+        )
+    else:
+        print(f"[{_timestamp()}] Modo paralelo: {workers} workers, {len(all_ids)} issues")
+        visited = process_issues_parallel(
+            session, all_ids, evidencias_dir, individual_pdfs_dir, workers
+        )
 
     if visited:
         df_tarefas = _build_tarefas_dataframe(visited)

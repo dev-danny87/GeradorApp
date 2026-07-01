@@ -1,6 +1,7 @@
 import logging
 import re
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
@@ -11,7 +12,12 @@ from redmine_mappings import LOGIN_TO_USER_ID
 
 SSP_BASE_URL = "https://redmine.ssp.go.gov.br"
 PGE_BASE_URL = "https://projetos.procuradoria.go.gov.br/contrato17"
+IPHAN_BASE_URL = "https://redmine.iphan.gov.br/redmine"
 PGE_LOGIN_URL = f"{PGE_BASE_URL}/login"
+IPHAN_LOGIN_URL = f"{IPHAN_BASE_URL}/login"
+
+# IPHAN uses a certificate chain not present in the default CA bundle on some machines.
+_SSL_VERIFY_DISABLED_HOSTS = {IPHAN_BASE_URL}
 
 # Backward compatibility
 BASE_URL = SSP_BASE_URL
@@ -22,6 +28,16 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
+
+
+def _configure_session_ssl(session: requests.Session, base_url: str) -> None:
+    if base_url in _SSL_VERIFY_DISABLED_HOSTS:
+        session.verify = False
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        logger.warning(
+            "Verificação SSL desabilitada para %s (certificado não confiável pelo repositório local de CAs).",
+            base_url,
+        )
 
 
 def _resolve_user_id(username: str, base_url: str, soup: Optional[BeautifulSoup] = None) -> Optional[str]:
@@ -101,6 +117,7 @@ def login_redmine(
     adapter = HTTPAdapter(max_retries=retries)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
+    _configure_session_ssl(session, base_url)
 
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -113,7 +130,12 @@ def login_redmine(
     })
 
     try:
-        login_url = PGE_LOGIN_URL if base_url == PGE_BASE_URL else f"{base_url}/login"
+        if base_url == PGE_BASE_URL:
+            login_url = PGE_LOGIN_URL
+        elif base_url == IPHAN_BASE_URL:
+            login_url = IPHAN_LOGIN_URL
+        else:
+            login_url = f"{base_url}/login"
         r_login_page = session.get(login_url, timeout=30)
         r_login_page.raise_for_status()
 

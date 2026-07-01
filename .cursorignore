@@ -1,1 +1,8 @@
-src/.env
+# Environment
+.env
+
+# Generated output
+diffs/
+Relatórios/
+relatorios/
+relatorios_pge/

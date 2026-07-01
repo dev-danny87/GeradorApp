@@ -5,53 +5,12 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="f1d20883-2c11-4d89-86c3-e6c1f95215f8" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/11 - Gerenciamento de Projeto de Solucao de TI/Jeann Karlo de Melo Vieira/33399/33399.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/11 - Gerenciamento de Projeto de Solucao de TI/Jeann Karlo de Melo Vieira/33400/33400.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/11 - Gerenciamento de Projeto de Solucao de TI/Jeann Karlo de Melo Vieira/33401/33401.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/11 - Gerenciamento de Projeto de Solucao de TI/Jeann Karlo de Melo Vieira/33402/33402.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/18 - Implementacao de Novo Recurso do Tipo Regra de Negocio (backend)/Iago Passaglia Pereira/33666/33666.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/21 - Manutencoes em Sistemas Existentes (corretivas, evolutivas, adaptativas ou perfectivas)/Gabriel Santullo Rocha Lima/33535/33535.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/21 - Manutencoes em Sistemas Existentes (corretivas, evolutivas, adaptativas ou perfectivas)/Iago Passaglia Pereira/33493/33493.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/21 - Manutencoes em Sistemas Existentes (corretivas, evolutivas, adaptativas ou perfectivas)/Janerson Douglas dos Santos/33571/33571.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/25 - Execucao de Testes Funcionais Nao Automatizados (Manuais)/Lucas Ferreira Madruga/33469/33469.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/30 - Construcao e Implantacao (Deployment) de aplicacao/Gabriel Santullo Rocha Lima/33536/33536.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/30 - Construcao e Implantacao (Deployment) de aplicacao/Gabriel Santullo Rocha Lima/33536/clipboard-202606091312-5kz13.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/30 - Construcao e Implantacao (Deployment) de aplicacao/Gabriel Santullo Rocha Lima/33537/33537.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/30 - Construcao e Implantacao (Deployment) de aplicacao/Iago Passaglia Pereira/33494/33494.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/30 - Construcao e Implantacao (Deployment) de aplicacao/Iago Passaglia Pereira/33495/33495.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/30 - Construcao e Implantacao (Deployment) de aplicacao/Janerson Douglas dos Santos/33572/33572.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/30 - Construcao e Implantacao (Deployment) de aplicacao/Janerson Douglas dos Santos/33573/33573.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Aline dos Reis Oliveira/33508/33508.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Aline dos Reis Oliveira/33508/Evidencias Suporte e Apoio - STT Implantacao Producao - 08_06 a 12_06.docx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Aline dos Reis Oliveira/33546/33546.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Aline dos Reis Oliveira/33546/CONSOLIDADO TRANSACAO TRIBUTARIA - 17102025 A 31052026.csv" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Aline dos Reis Oliveira/33546/Consolidado Transacoes Efetivadas - Maio_2026.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Aline dos Reis Oliveira/33546/clipboard-202606111837-tptnl.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Brenda Ferreira Lima da Silva/33448/33448.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Brenda Ferreira Lima da Silva/33448/Dares Recebidos - PROCON.xlsx" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/32 - Operacao assistida de Apoio as Solucoes de TI/Brenda Ferreira Lima da Silva/33448/clipboard-202606031736-nnkaa.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/33 - Elaboracao e Execucao de Scripts/Brenda Ferreira Lima da Silva/33411/33411.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/33 - Elaboracao e Execucao de Scripts/Brenda Ferreira Lima da Silva/33411/consulta_pagamentos_quita_procon.sql" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/33 - Elaboracao e Execucao de Scripts/Brenda Ferreira Lima da Silva/33411/consulta_valor_atualizado_dividas_mensal.zip" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/33 - Elaboracao e Execucao de Scripts/Igor da Silva Ramos/33592/33592.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/33 - Elaboracao e Execucao de Scripts/Igor da Silva Ramos/33592/negociacoes-efetivadas.csv" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/33 - Elaboracao e Execucao de Scripts/Igor da Silva Ramos/33593/33593.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/33 - Elaboracao e Execucao de Scripts/Igor da Silva Ramos/33593/parcelas-pagas.csv" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/4 - Revisao _ Evolucao de Requisitos Existentes/Lucas Ferreira Madruga/33468/33468.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33398/33398.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33446/33446.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33446/clipboard-202606031038-dl8b2.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33447/33447.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33447/clipboard-202606031042-15gev.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33507/33507.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33531/33531.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33531/clipboard-202606091003-0xeoz.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33531/clipboard-202606091003-kuwau.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33531/clipboard-202606091003-qkyb6.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33544/33544.pdf" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33544/clipboard-202606091810-fudvc.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/relatorios_pge/ITEM 1 - JUNHO - 2026/30-06-21_24/sem_catalogo/Jeann Karlo de Melo Vieira/33570/33570.pdf" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/layout/tab_evidences_pge.py" beforeDir="false" afterPath="$PROJECT_DIR$/layout/tab_evidences_pge.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/auth_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/auth_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/services/pge_evidence_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/services/pge_evidence_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils/ui_components.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/ui_components.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -179,7 +138,7 @@
       <workItem from="1770646571863" duration="1188000" />
       <workItem from="1773075025733" duration="590000" />
       <workItem from="1780072346916" duration="71680000" />
-      <workItem from="1782236285168" duration="90202000" />
+      <workItem from="1782236285168" duration="99995000" />
     </task>
     <servers />
   </component>

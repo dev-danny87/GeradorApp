@@ -15,11 +15,14 @@ import pandas as pd
 
 from layout.tab_evidences import create_evidences_tab
 from layout.tab_evidences_pge import create_evidences_pge_tab
+from layout.tab_evidences_iphan import create_evidences_iphan_tab
 from layout.tab_tasks import create_tasks_tab
 from layout.tab_close_tasks import create_close_tasks_tab
 from layout.tab_diffs import create_diffs_tab
-from services.auth_service import login_redmine, SSP_BASE_URL, PGE_BASE_URL
+from services.auth_service import login_redmine, SSP_BASE_URL, PGE_BASE_URL, IPHAN_BASE_URL
 from services.pge_evidence_service import generate_evidences_pge, set_app_run as set_pge_app_run
+from services.iphan.registry import get_service as get_iphan_service
+from services.iphan._common import set_app_run as set_iphan_app_run
 
 VERSION = "evidences-v2.1-2025-09-12"
 
@@ -359,6 +362,16 @@ def stop_process():
     global app_run
     app_run = False
     set_pge_app_run(False)
+    set_iphan_app_run(False)
+
+
+def generate_evidences_iphan(session, project_key, app_state):
+    service = get_iphan_service(project_key)
+    if not service:
+        print(f"[{timestamp()}] ERROR: Projeto IPHAN desconhecido: {project_key}")
+        return
+    set_iphan_app_run(True)
+    service.generate_evidences(session, app_state)
 
 
 # ADICIONADO: O argumento `session` foi injetado aqui também
@@ -439,7 +452,9 @@ def main(page: ft.Page) -> None:
         "is_gestor": False,
         "redmine_host": "ssp",
         "base_url": SSP_BASE_URL,
-        "pge_cf28_options": None,
+        "pge_cf28_enumerations": None,
+        "iphan_options": {},
+        "iphan_selected_project": None,
     }
     sync_callbacks = []
 
@@ -455,9 +470,20 @@ def main(page: ft.Page) -> None:
     host_selection = {"value": "ssp"}
     host_subtitle = ft.Text("SSP (padrão)")
 
+    _HOST_LABELS = {
+        "ssp": "SSP (padrão)",
+        "pge": "PGE",
+        "iphan": "IPHAN",
+    }
+    _HOST_BASE_URLS = {
+        "ssp": SSP_BASE_URL,
+        "pge": PGE_BASE_URL,
+        "iphan": IPHAN_BASE_URL,
+    }
+
     def on_host_radio_change(e):
         host_selection["value"] = e.control.value
-        host_subtitle.value = "PGE" if e.control.value == "pge" else "SSP (padrão)"
+        host_subtitle.value = _HOST_LABELS.get(e.control.value, "SSP (padrão)")
         page.update()
 
     host_selector = ft.ExpansionTile(
@@ -468,6 +494,7 @@ def main(page: ft.Page) -> None:
                 content=ft.Column([
                     ft.Radio(value="ssp", label="SSP (redmine.ssp.go.gov.br)"),
                     ft.Radio(value="pge", label="PGE (projetos.procuradoria.go.gov.br/contrato17)"),
+                    ft.Radio(value="iphan", label="IPHAN (redmine.iphan.gov.br/redmine)"),
                 ]),
                 value="ssp",
                 on_change=on_host_radio_change,
@@ -503,7 +530,7 @@ def main(page: ft.Page) -> None:
 
         def bg_login():
             host = host_selection["value"]
-            base_url = PGE_BASE_URL if host == "pge" else SSP_BASE_URL
+            base_url = _HOST_BASE_URLS.get(host, SSP_BASE_URL)
             session, result, is_gestor = login_redmine(user, pwd, base_url)
 
             txt_username.disabled = False
@@ -512,9 +539,10 @@ def main(page: ft.Page) -> None:
             login_progress.visible = False
 
             if session:
-                if host == "pge" and not is_gestor:
+                if host in ("pge", "iphan") and not is_gestor:
                     session.close()
-                    login_error_text.value = "Acesso negado: permissão de Gestor necessária para o PGE."
+                    inst = "PGE" if host == "pge" else "IPHAN"
+                    login_error_text.value = f"Acesso negado: permissão de Gestor necessária para o {inst}."
                     login_error_text.visible = True
                 else:
                     set_auth(session, user, is_gestor, host, base_url)
@@ -539,7 +567,9 @@ def main(page: ft.Page) -> None:
         app_state["redmine_host"] = redmine_host if session else "ssp"
         app_state["base_url"] = base_url if session else SSP_BASE_URL
         if not session:
-            app_state["pge_cf28_options"] = None
+            app_state["pge_cf28_enumerations"] = None
+            app_state["iphan_options"] = {}
+            app_state["iphan_selected_project"] = None
 
         if session:
             login_container.visible = False
@@ -547,6 +577,8 @@ def main(page: ft.Page) -> None:
 
             if redmine_host == "pge" and is_gestor:
                 tabs.tabs = [tab_evidences_pge]
+            elif redmine_host == "iphan" and is_gestor:
+                tabs.tabs = [tab_evidences_iphan]
             elif redmine_host == "ssp" and is_gestor:
                 tabs.tabs = [tab_evidences, tab_tasks, tab_close, tab_diffs]
             else:
@@ -563,6 +595,9 @@ def main(page: ft.Page) -> None:
 
         page.update()
 
+    def handle_iphan_generate(session, project_key):
+        generate_evidences_iphan(session, project_key, app_state)
+
     # Create Tabs
     tab_evidences = create_evidences_tab(
         on_generate=generate_evidences,
@@ -576,6 +611,15 @@ def main(page: ft.Page) -> None:
 
     tab_evidences_pge = create_evidences_pge_tab(
         on_generate=generate_evidences_pge,
+        on_stop=stop_process,
+        get_timestamp=timestamp,
+        app_state=app_state,
+        set_auth=set_auth,
+        sync_callbacks=sync_callbacks,
+    )
+
+    tab_evidences_iphan = create_evidences_iphan_tab(
+        on_generate=handle_iphan_generate,
         on_stop=stop_process,
         get_timestamp=timestamp,
         app_state=app_state,

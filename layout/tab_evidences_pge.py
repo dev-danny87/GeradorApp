@@ -1,7 +1,7 @@
 import flet as ft
 from threading import Thread
 
-from services.pge_evidence_service import fetch_cf28_options
+from services.pge_evidence_service import fetch_cf28_enumerations
 
 
 def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set_auth, sync_callbacks):
@@ -25,21 +25,52 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
         options=[],
     )
 
-    def load_cf28_options():
+    switch_include_inactive = ft.Switch(
+        label="Incluir inativos",
+        value=False,
+        tooltip="Desligado: somente ativos",
+    )
+
+    def apply_cf28_filter():
+        enumerations = app_state.get("pge_cf28_enumerations") or []
+        if switch_include_inactive.value:
+            filtered = enumerations
+        else:
+            filtered = [e for e in enumerations if e.get("active")]
+
+        if not filtered and enumerations:
+            filtered = enumerations
+
+        dropdown_month.options = [
+            ft.dropdown.Option(key=e["id"], text=e["label"]) for e in filtered
+        ]
+        if filtered:
+            dropdown_month.value = filtered[-1]["id"]
+
+    def on_switch_change(e):
+        apply_cf28_filter()
+        if dropdown_month.page:
+            dropdown_month.page.update()
+
+    switch_include_inactive.on_change = on_switch_change
+
+    def load_cf28_enumerations():
         session = app_state.get("session")
         if not session:
             return
-        if app_state.get("pge_cf28_options"):
-            options = app_state["pge_cf28_options"]
-        else:
-            options = fetch_cf28_options(session)
-            app_state["pge_cf28_options"] = options
 
-        dropdown_month.options = [
-            ft.dropdown.Option(key=val, text=label) for label, val in options
-        ]
-        if options and not dropdown_month.value:
-            dropdown_month.value = options[0][1]
+        if app_state.get("pge_cf28_enumerations"):
+            apply_cf28_filter()
+            return
+
+        def fetch_in_background():
+            enumerations = fetch_cf28_enumerations(session)
+            app_state["pge_cf28_enumerations"] = enumerations
+            apply_cf28_filter()
+            if dropdown_month.page:
+                dropdown_month.page.update()
+
+        Thread(target=fetch_in_background, daemon=True).start()
 
     def handle_generate():
         session = app_state.get("session")
@@ -95,6 +126,7 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
     main_column = ft.Column(
         controls=[
             user_header,
+            switch_include_inactive,
             dropdown_month,
             row_generate,
         ],
@@ -106,9 +138,11 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
     def sync_ui():
         if app_state.get("session") and app_state.get("redmine_host") == "pge":
             lbl_logged_in.value = app_state.get("user", "")
-            load_cf28_options()
+            load_cf28_enumerations()
         else:
             lbl_logged_in.value = ""
+            dropdown_month.options = []
+            dropdown_month.value = None
 
     sync_callbacks.append(sync_ui)
     sync_ui()
