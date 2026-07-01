@@ -53,6 +53,8 @@ Relatórios/
 relatorios/
 relatorios_pge/
 relatorios_iphan/
+relatorios_editais_iphan/
+relatorios_painel_ouvidoria/
 
 # --- Local scratch / AI exports (repo root) ---
 /*.json

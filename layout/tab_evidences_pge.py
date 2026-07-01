@@ -1,7 +1,8 @@
 import flet as ft
 from threading import Thread
 
-from services.pge_evidence_service import fetch_cf28_enumerations
+from services.pge_evidence_service import fetch_cf28_enumerations, find_cf28_for_month
+from utils.month_selector import create_month_shortcut_dropdown, month_label_for_key
 
 
 def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set_auth, sync_callbacks):
@@ -19,7 +20,7 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
         ),
     ], alignment=ft.MainAxisAlignment.END)
 
-    dropdown_month = ft.Dropdown(
+    dropdown_entregue = ft.Dropdown(
         label="Entregue em",
         width=400,
         options=[],
@@ -31,26 +32,59 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
         tooltip="Desligado: somente ativos",
     )
 
-    def apply_cf28_filter():
+    def _filtered_enumerations() -> list[dict]:
         enumerations = app_state.get("pge_cf28_enumerations") or []
         if switch_include_inactive.value:
             filtered = enumerations
         else:
             filtered = [e for e in enumerations if e.get("active")]
-
         if not filtered and enumerations:
             filtered = enumerations
+        return filtered
 
-        dropdown_month.options = [
+    def _apply_month_shortcut_to_entregue() -> bool:
+        filtered = _filtered_enumerations()
+        if not filtered or not dropdown_month_shortcut.value:
+            return False
+
+        match = find_cf28_for_month(
+            filtered,
+            dropdown_month_shortcut.value,
+            active_only=not switch_include_inactive.value,
+        )
+        if not match:
+            print(
+                f"[{get_timestamp()}] WARN: nenhum 'Entregue em' para "
+                f"{month_label_for_key(dropdown_month_shortcut.value)}"
+            )
+            return False
+
+        dropdown_entregue.value = match["id"]
+        return True
+
+    def apply_cf28_filter():
+        filtered = _filtered_enumerations()
+        dropdown_entregue.options = [
             ft.dropdown.Option(key=e["id"], text=e["label"]) for e in filtered
         ]
-        if filtered:
-            dropdown_month.value = filtered[-1]["id"]
+        if not filtered:
+            dropdown_entregue.value = None
+            return
+
+        if not _apply_month_shortcut_to_entregue():
+            dropdown_entregue.value = filtered[-1]["id"]
+
+    def on_month_shortcut_change(e):
+        apply_cf28_filter()
+        if dropdown_entregue.page:
+            dropdown_entregue.page.update()
+
+    dropdown_month_shortcut = create_month_shortcut_dropdown(on_month_shortcut_change)
 
     def on_switch_change(e):
         apply_cf28_filter()
-        if dropdown_month.page:
-            dropdown_month.page.update()
+        if dropdown_entregue.page:
+            dropdown_entregue.page.update()
 
     switch_include_inactive.on_change = on_switch_change
 
@@ -67,8 +101,8 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
             enumerations = fetch_cf28_enumerations(session)
             app_state["pge_cf28_enumerations"] = enumerations
             apply_cf28_filter()
-            if dropdown_month.page:
-                dropdown_month.page.update()
+            if dropdown_entregue.page:
+                dropdown_entregue.page.update()
 
         Thread(target=fetch_in_background, daemon=True).start()
 
@@ -77,12 +111,12 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
         if not session:
             print(f"[{get_timestamp()}] ERROR: Faça login no PGE primeiro.")
             return
-        cf_28_id = dropdown_month.value
+        cf_28_id = dropdown_entregue.value
         if not cf_28_id:
             print(f"[{get_timestamp()}] ERROR: Selecione o mês 'Entregue em'.")
             return
         label = next(
-            (o.text for o in dropdown_month.options if o.key == cf_28_id),
+            (o.text for o in dropdown_entregue.options if o.key == cf_28_id),
             cf_28_id,
         )
         try:
@@ -127,7 +161,8 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
         controls=[
             user_header,
             switch_include_inactive,
-            dropdown_month,
+            dropdown_month_shortcut,
+            dropdown_entregue,
             row_generate,
         ],
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -141,8 +176,8 @@ def create_evidences_pge_tab(on_generate, on_stop, get_timestamp, app_state, set
             load_cf28_enumerations()
         else:
             lbl_logged_in.value = ""
-            dropdown_month.options = []
-            dropdown_month.value = None
+            dropdown_entregue.options = []
+            dropdown_entregue.value = None
 
     sync_callbacks.append(sync_ui)
     sync_ui()

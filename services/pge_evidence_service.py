@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 from services.auth_service import PGE_BASE_URL
+from utils.month_selector import MONTH_NAMES_UPPER
 
 load_dotenv()
 
@@ -205,6 +206,38 @@ def _parse_cf28_enumerations(soup: BeautifulSoup) -> List[dict]:
         enumerations.append({"id": enum_id, "label": label, "active": active})
 
     return enumerations
+
+
+def find_cf28_for_month(
+    enumerations: List[dict],
+    month_key: str,
+    *,
+    active_only: bool = True,
+) -> Optional[dict]:
+    if not enumerations or not month_key:
+        return None
+
+    try:
+        year_str, month_str = month_key.split("-", 1)
+        month_index = int(month_str)
+        year_str = year_str.strip()
+    except (ValueError, IndexError):
+        return None
+
+    if month_index < 1 or month_index > 12:
+        return None
+
+    month_token = MONTH_NAMES_UPPER[month_index - 1]
+    pool = [entry for entry in enumerations if entry.get("active")] if active_only else list(enumerations)
+    if not pool and enumerations:
+        pool = list(enumerations)
+
+    matches = [
+        entry
+        for entry in pool
+        if month_token in (entry.get("label") or "").upper() and year_str in (entry.get("label") or "")
+    ]
+    return matches[-1] if matches else None
 
 
 def fetch_cf28_enumerations(session: requests.Session) -> List[dict]:
