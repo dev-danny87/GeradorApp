@@ -22,7 +22,6 @@ from services.iphan._wiki_download import download_wiki_rows
 
 PROJECT_KEY = "painel_ouvidoria"
 PROJECT_LABEL = "PAINEL OUVIDORIA"
-OUTPUT_ROOT = "relatorios_painel_ouvidoria"
 
 
 def _ensure_date_controls(cache: dict):
@@ -80,7 +79,7 @@ def generate_evidences(session, app_state):
     start_date = cache["start_date"]
     end_date = cache["end_date"]
 
-    dirs = build_output_dirs(OUTPUT_ROOT, include_pf_contagem=False)
+    dirs = build_output_dirs(PROJECT_KEY, include_pf_contagem=False)
     print(f"\n[{timestamp()}] Preparando evidências {PROJECT_LABEL}...")
     print(f"Período: {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}")
     print(f"Pasta de saída: {dirs['base']}")

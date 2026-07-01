@@ -16,6 +16,7 @@ EVIDENCIAS_DIR = "Evidências"
 RELATORIO_INDIVIDUAIS_DIR = "Relatório de Atividades Individuais"
 RELATORIO_PF_DIR = "Relatório de Contagem de Pontos de Função"
 BACKLOG_PDF_NAME = "Backlog.pdf"
+IPHAN_OUTPUT_ROOT = "relatorios_iphan"
 
 
 def set_app_run(value: bool) -> None:
@@ -108,9 +109,9 @@ def month_bounds(today: datetime.date | None = None) -> tuple[datetime.date, dat
     return today.replace(day=1), today.replace(day=last_day)
 
 
-def build_output_dirs(output_root: str, *, include_pf_contagem: bool = True) -> Dict[str, str]:
+def build_output_dirs(contract_key: str, *, include_pf_contagem: bool = True) -> Dict[str, str]:
     folder_stamp = datetime.date.today().strftime("%d-%m") + "-" + time.strftime("%H_%M")
-    base_out_dir = os.path.join(".", output_root, folder_stamp)
+    base_out_dir = os.path.join(".", IPHAN_OUTPUT_ROOT, contract_key, folder_stamp)
     dirs = {
         "base": base_out_dir,
         "evidencias": os.path.join(base_out_dir, EVIDENCIAS_DIR),
