@@ -10,6 +10,11 @@ from services.iphan._common import (
     timestamp,
 )
 from services.iphan._date_controls import build_date_controls
+from services.iphan._error_registry import (
+    begin_error_registry,
+    error_registry_summary,
+    write_error_registry,
+)
 from services.iphan._wiki_backlog import (
     PAINEL_BACKLOG_PDF_URL,
     PAINEL_BACKLOG_WIKI_URL,
@@ -18,6 +23,7 @@ from services.iphan._wiki_backlog import (
     filter_sprints_by_end_date,
 )
 from services.iphan._wiki_backlog_painel import parse_painel_backlog_html
+from utils.output_paths import month_label_from_date
 from services.iphan._wiki_download import download_wiki_rows
 
 PROJECT_KEY = "painel_ouvidoria"
@@ -75,11 +81,13 @@ def generate_evidences(session, app_state):
         print(f"[{timestamp()}] ERROR: {message}")
         return
 
+    begin_error_registry(PROJECT_KEY)
+
     cache = options_cache(app_state, PROJECT_KEY)
     start_date = cache["start_date"]
     end_date = cache["end_date"]
 
-    dirs = build_output_dirs(PROJECT_KEY, include_pf_contagem=False)
+    dirs = build_output_dirs(PROJECT_KEY, month_label_from_date(start_date), include_pf_contagem=False)
     print(f"\n[{timestamp()}] Preparando evidências {PROJECT_LABEL}...")
     print(f"Período: {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}")
     print(f"Pasta de saída: {dirs['base']}")
@@ -98,9 +106,17 @@ def generate_evidences(session, app_state):
 
     backlog_dest = os.path.join(dirs["base"], BACKLOG_PDF_NAME)
     print(f"\n[{timestamp()}] Baixando {BACKLOG_PDF_NAME}...")
-    backlog_ok = download_file(session, PAINEL_BACKLOG_PDF_URL, backlog_dest)
+    backlog_ok = download_file(
+        session,
+        PAINEL_BACKLOG_PDF_URL,
+        backlog_dest,
+        context=BACKLOG_PDF_NAME,
+    )
+
+    write_error_registry(dirs["base"])
 
     print(f"\n[{timestamp()}] Resumo:")
     print(f"  Wiki PDFs: {wiki_ok} ok, {wiki_fail} falha(s)")
     print(f"  Backlog.pdf: {'ok' if backlog_ok else 'falha'}")
+    print(f"  {error_registry_summary()}")
     print(f"\n[{timestamp()}] Fim! DIRETORIO_FINAL:{dirs['base']}")

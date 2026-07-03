@@ -92,6 +92,17 @@ SPRINT13_PAGE_HTML = """
       <td>Homologada</td>
       <td>1</td>
     </tr>
+    <tr>
+      <td>115</td>
+      <td>5</td>
+      <td><a href="/projects/licenciamento-ambiental/wiki/Item-Cancelada" class="external">Item Cancelada</a></td>
+      <td>Felippe Rodrigo </td>
+      <td>Fabrício Martins</td>
+      <td>Igor (Back) / Humberto (Front)</td>
+      <td>18/05/2026 </td>
+      <td><span style="color:gray;"> Cancelada</span></td>
+      <td>1,00</td>
+    </tr>
   </table>
 </div>
 """.format(shared_url=SHARED_WIKI_URL)
@@ -166,6 +177,15 @@ class TestWikiSprintsSaip(unittest.TestCase):
         self.assertEqual(rows[0].sprint_slug, "SAIP20-Sprint13")
         self.assertIn("SOLICITA", rows[0].wiki_slug)
         self.assertEqual(rows[1].hu_number, "114")
+
+    def test_cancelada_row_excluded(self):
+        rows = parse_saip_sprint_page_html(
+            SPRINT13_PAGE_HTML,
+            13,
+            sprint_slug="SAIP20-Sprint13",
+        )
+        hu_numbers = {row.hu_number for row in rows}
+        self.assertNotIn("115", hu_numbers)
 
     def test_duplicate_wiki_urls_for_hu116_and_hu117(self):
         rows = parse_saip_sprint_page_html(

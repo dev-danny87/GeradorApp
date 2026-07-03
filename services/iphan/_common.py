@@ -9,14 +9,16 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from services.auth_service import IPHAN_BASE_URL
+from utils.output_paths import (
+    EVIDENCIAS_DIR,
+    RELATORIO_INDIVIDUAIS_DIR,
+    RELATORIO_PF_DIR,
+    build_iphan_run_dirs,
+)
 
 _app_run = True
 
-EVIDENCIAS_DIR = "Evidências"
-RELATORIO_INDIVIDUAIS_DIR = "Relatório de Atividades Individuais"
-RELATORIO_PF_DIR = "Relatório de Contagem de Pontos de Função"
 BACKLOG_PDF_NAME = "Backlog.pdf"
-IPHAN_OUTPUT_ROOT = "relatorios_iphan"
 
 
 def set_app_run(value: bool) -> None:
@@ -59,7 +61,16 @@ def http_get(session: requests.Session, url: str, **kwargs) -> requests.Response
     return response
 
 
-def download_file(session: requests.Session, url: str, dest_path: str, max_retries: int = 3) -> bool:
+def download_file(
+    session: requests.Session,
+    url: str,
+    dest_path: str,
+    max_retries: int = 3,
+    *,
+    context: str = "",
+) -> bool:
+    from services.iphan._error_registry import record_error
+
     safe_mkdir(os.path.dirname(dest_path))
     last_exc = None
 
@@ -78,7 +89,15 @@ def download_file(session: requests.Session, url: str, dest_path: str, max_retri
             print(f"[{timestamp()}] WARN: download attempt {attempt}/{max_retries} failed for {url}: {exc}")
             time.sleep(1.5 * attempt)
 
+    message = str(last_exc)
     print(f"[{timestamp()}] ERROR: failed to download {url} to {dest_path}: {last_exc}")
+    record_error(
+        kind="download",
+        message=message,
+        url=url,
+        dest_path=dest_path,
+        context=context,
+    )
     return False
 
 
@@ -109,19 +128,17 @@ def month_bounds(today: datetime.date | None = None) -> tuple[datetime.date, dat
     return today.replace(day=1), today.replace(day=last_day)
 
 
-def build_output_dirs(contract_key: str, *, include_pf_contagem: bool = True) -> Dict[str, str]:
-    folder_stamp = datetime.date.today().strftime("%d-%m") + "-" + time.strftime("%H_%M")
-    base_out_dir = os.path.join(".", IPHAN_OUTPUT_ROOT, contract_key, folder_stamp)
-    dirs = {
-        "base": base_out_dir,
-        "evidencias": os.path.join(base_out_dir, EVIDENCIAS_DIR),
-        "individual": os.path.join(base_out_dir, RELATORIO_INDIVIDUAIS_DIR),
-    }
-    if include_pf_contagem:
-        dirs["pf_contagem"] = os.path.join(base_out_dir, RELATORIO_PF_DIR)
-    for path in dirs.values():
-        safe_mkdir(path)
-    return dirs
+def build_output_dirs(
+    contract_key: str,
+    month_label: str,
+    *,
+    include_pf_contagem: bool = True,
+) -> Dict[str, str]:
+    return build_iphan_run_dirs(
+        contract_key,
+        month_label,
+        include_pf_contagem=include_pf_contagem,
+    )
 
 
 def options_cache(app_state: dict, project_key: str) -> dict:

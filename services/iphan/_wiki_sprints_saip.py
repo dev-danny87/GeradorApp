@@ -14,6 +14,7 @@ from services.iphan._wiki_backlog import (
     _cell_text,
     _column_index_map,
     _normalize_person,
+    is_cancelled_status,
 )
 
 SAIP_SPRINTS_WIKI_URL = f"{IPHAN_BASE_URL}/projects/licenciamento-ambiental/wiki/Sprints"
@@ -216,6 +217,10 @@ def parse_saip_sprint_page_html(
         if not wiki_slug:
             continue
 
+        status_text = _cell_text(row, status_idx) if status_idx >= 0 else ""
+        if is_cancelled_status(status_text):
+            continue
+
         rows.append(
             SaipRow(
                 sprint_number=sprint_number,
@@ -230,7 +235,7 @@ def parse_saip_sprint_page_html(
                 title_text=link.get_text(" ", strip=True) or wiki_slug,
                 wiki_slug=wiki_slug,
                 wiki_url=wiki_href,
-                status_text=_cell_text(row, status_idx) if status_idx >= 0 else "",
+                status_text=status_text,
             )
         )
 

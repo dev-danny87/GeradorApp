@@ -23,6 +23,7 @@ from services.auth_service import login_redmine, SSP_BASE_URL, PGE_BASE_URL, IPH
 from services.pge_evidence_service import generate_evidences_pge, set_app_run as set_pge_app_run
 from services.iphan.registry import get_service as get_iphan_service
 from services.iphan._common import set_app_run as set_iphan_app_run
+from utils.output_paths import build_ssp_run_dir
 
 VERSION = "evidences-v2.1-2025-09-12"
 
@@ -202,10 +203,7 @@ def generate_evidences(session, strPathRedmineQueryId: str, projeto: str, except
     except Exception:
         pass
 
-    month_year = datetime.date.today().strftime("%B_%Y").capitalize()
-    folder_stamp = datetime.date.today().strftime("%d-%m") + "-" + time.strftime("%H_%M")
-    base_out_dir = os.path.join(".", "Relatórios", f"Evidencias_{projeto}", month_year, folder_stamp)
-    safe_mkdir(base_out_dir)
+    base_out_dir = build_ssp_run_dir(projeto)
 
     def get_redmine_page(session: requests.Session, page_num: int):
         full_url = f"{base_list_url}page={page_num}&query_id={strPathRedmineQueryId}"
@@ -376,6 +374,15 @@ def generate_evidences_iphan(session, project_key, app_state):
 
 # ADICIONADO: O argumento `session` foi injetado aqui também
 def generate_all_evidences(session):
+    global app_run
+    app_run = True
+
+    if not session:
+        print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")
+        return
+
+    print(f"\n[{timestamp()}] Iniciando geração em lote (todos os projetos SSP)...")
+
     batch = [
         ("120", "contrato_hpm", "hpm"),
         ("83", "gerencia_inovacao", ""),

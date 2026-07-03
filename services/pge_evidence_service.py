@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from services.auth_service import PGE_BASE_URL
 from utils.month_selector import MONTH_NAMES_UPPER
+from utils.output_paths import build_pge_run_dir
 
 load_dotenv()
 
@@ -774,10 +775,7 @@ def generate_evidences_pge(session, cf_28_id: str, month_label: str) -> None:
         print(f"[{_timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")
         return
 
-    folder_stamp = datetime.date.today().strftime("%d-%m") + "-" + time.strftime("%H_%M")
-    safe_month = re.sub(r'[<>:"/\\|?*]', "_", month_label)[:80]
-    base_out_dir = os.path.join(".", "relatorios_pge", safe_month, folder_stamp)
-    _safe_mkdir(base_out_dir)
+    base_out_dir = build_pge_run_dir(month_label)
     evidencias_dir = os.path.join(base_out_dir, EVIDENCIAS_DIR)
     _safe_mkdir(evidencias_dir)
     individual_pdfs_dir = os.path.join(base_out_dir, RELATORIO_INDIVIDUAIS_DIR)

@@ -11,6 +11,7 @@ from services.iphan._common import (
     safe_mkdir,
     timestamp,
 )
+from services.iphan._error_registry import record_error
 from services.iphan._wiki_backlog import (
     BacklogRow,
     resolve_wiki_assets,
@@ -49,6 +50,10 @@ def _format_row_log(row: BacklogRow, *, developer_only: bool) -> str:
     return " | ".join(parts)
 
 
+def _row_context(row: BacklogRow, *, developer_only: bool) -> str:
+    return _format_row_log(row, developer_only=developer_only)
+
+
 def _download_wiki_row(
     session,
     row: BacklogRow,
@@ -70,11 +75,23 @@ def _download_wiki_row(
         assets = resolve_wiki_assets(session, row.wiki_url)
         if not assets:
             print(f"[{timestamp()}] ERROR: não foi possível resolver PDF para {row.wiki_url}")
+            record_error(
+                kind="wiki_resolve",
+                message="não foi possível resolver PDF",
+                url=row.wiki_url,
+                context=_row_context(row, developer_only=developer_only),
+            )
             return False
         pdf_url, canonical_wiki_url = assets
         slug = wiki_slug_from_url(pdf_url) or wiki_slug_from_url(canonical_wiki_url)
         if not slug:
             print(f"[{timestamp()}] ERROR: não foi possível resolver slug para {row.wiki_url}")
+            record_error(
+                kind="wiki_resolve",
+                message="não foi possível resolver slug",
+                url=row.wiki_url,
+                context=_row_context(row, developer_only=developer_only),
+            )
             return False
         if slug != row.wiki_slug:
             print(f"[{timestamp()}] WARN: slug backlog {row.wiki_slug} -> canônico {slug}")
@@ -84,7 +101,12 @@ def _download_wiki_row(
     pdf_name = safe_filename(slug) + ".pdf"
     primary_dest = _assignee_dest(dirs, assignees[0], slug)
 
-    if not download_file(session, pdf_url, primary_dest):
+    if not download_file(
+        session,
+        pdf_url,
+        primary_dest,
+        context=_row_context(row, developer_only=developer_only),
+    ):
         return False
 
     if not os.path.isfile(primary_dest) or os.path.getsize(primary_dest) == 0:
@@ -168,5 +190,6 @@ def download_wiki_rows(
             except Exception as exc:
                 fail_count += 1
                 print(f"[{timestamp()}] ERROR: falha ao baixar wiki PDF: {exc}")
+                record_error(kind="download", message=str(exc), context="wiki PDF (thread)")
 
     return ok_count, fail_count

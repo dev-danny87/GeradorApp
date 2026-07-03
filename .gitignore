@@ -49,15 +49,10 @@ GeradorApp/
 
 # --- App-generated output ---
 diffs/
-Relatórios/
 relatorios/
-relatorios_pge/
-relatorios_iphan/
 
 # --- Local scratch / AI exports (repo root) ---
 /*.json
 
 # --- Logs ---
 *.log
-/relatorios_saip
-/relatorios_painel_ouvidoria

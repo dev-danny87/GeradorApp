@@ -10,6 +10,11 @@ from services.iphan._common import (
     timestamp,
 )
 from services.iphan._date_controls import build_date_controls
+from services.iphan._error_registry import (
+    begin_error_registry,
+    error_registry_summary,
+    write_error_registry,
+)
 from services.iphan._sustentacao_files import (
     fetch_sustentacao_files_html,
     find_best_delivery_report,
@@ -72,13 +77,15 @@ def generate_evidences(session, app_state):
         print(f"[{timestamp()}] ERROR: {message}")
         return
 
+    begin_error_registry(PROJECT_KEY)
+
     cache = options_cache(app_state, PROJECT_KEY)
     start_date = cache["start_date"]
     year = start_date.year
     month = start_date.month
     month_label = MONTH_NAMES[month - 1]
 
-    output_dir = build_output_dirs(PROJECT_KEY, include_pf_contagem=False)["base"]
+    output_dir = build_output_dirs(PROJECT_KEY, month_label, include_pf_contagem=False)["base"]
     print(f"\n[{timestamp()}] Preparando relatório {PROJECT_LABEL}...")
     print(f"Mês selecionado: {month_label}/{year}")
     print(f"Pasta de saída: {output_dir}")
@@ -98,8 +105,16 @@ def generate_evidences(session, app_state):
 
     dest_path = os.path.join(output_dir, safe_filename(match.filename))
     print(f"\n[{timestamp()}] Baixando: {match.filename}")
-    download_ok = download_file(session, match.download_url, dest_path)
+    download_ok = download_file(
+        session,
+        match.download_url,
+        dest_path,
+        context=f"Relatório de entregas | {match.filename}",
+    )
+
+    write_error_registry(output_dir)
 
     print(f"\n[{timestamp()}] Resumo:")
     print(f"  Relatório: {'ok' if download_ok else 'falha'} ({match.filename})")
+    print(f"  {error_registry_summary()}")
     print(f"\n[{timestamp()}] Fim! DIRETORIO_FINAL:{output_dir}")

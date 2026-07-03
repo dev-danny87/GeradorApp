@@ -1,5 +1,6 @@
 import datetime
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import List, Optional
 from urllib.parse import unquote, urlparse
@@ -125,6 +126,16 @@ def _normalize_person(name: str) -> str:
     if not text or text in _EMPTY_ASSIGNEE:
         return ""
     return text
+
+
+def is_cancelled_status(status_text: str) -> bool:
+    normalized = (
+        unicodedata.normalize("NFKD", status_text or "")
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    return "cancelad" in normalized
 
 
 def _column_index_map(table) -> dict[str, int]:

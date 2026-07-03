@@ -10,6 +10,11 @@ from services.iphan._common import (
     timestamp,
 )
 from services.iphan._date_controls import build_date_controls
+from services.iphan._error_registry import (
+    begin_error_registry,
+    error_registry_summary,
+    write_error_registry,
+)
 from services.iphan._saip_excel import SAIP_PF_EXCEL_NAME, write_saip_pf_excel
 from services.iphan._saip_project_files import (
     fetch_saip_files_html,
@@ -86,6 +91,8 @@ def generate_evidences(session, app_state):
         print(f"[{timestamp()}] ERROR: {message}")
         return
 
+    begin_error_registry(PROJECT_KEY)
+
     cache = options_cache(app_state, PROJECT_KEY)
     start_date = cache["start_date"]
     end_date = cache["end_date"]
@@ -93,7 +100,7 @@ def generate_evidences(session, app_state):
     pf_month = start_date.month
     month_label = MONTH_NAMES[pf_month - 1]
 
-    dirs = build_output_dirs(PROJECT_KEY, include_pf_contagem=False)
+    dirs = build_output_dirs(PROJECT_KEY, month_label, include_pf_contagem=False)
     print(f"\n[{timestamp()}] Preparando evidências {PROJECT_LABEL}...")
     print(f"Período: {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}")
     print(f"Mês da planilha PF: {month_label}/{pf_year}")
@@ -137,7 +144,12 @@ def generate_evidences(session, app_state):
     if pf_match:
         pf_dest = os.path.join(dirs["base"], safe_filename(pf_match.filename))
         print(f"[{timestamp()}] Baixando planilha PF: {pf_match.filename}")
-        pf_ok = download_file(session, pf_match.download_url, pf_dest)
+        pf_ok = download_file(
+            session,
+            pf_match.download_url,
+            pf_dest,
+            context=f"Planilha Contagem PF | {pf_match.filename}",
+        )
     else:
         print(
             f"[{timestamp()}] WARN: Nenhuma Planilha Contagem PF encontrada "
@@ -146,7 +158,14 @@ def generate_evidences(session, app_state):
 
     sprints_dest = os.path.join(dirs["base"], SPRINTS_PDF_NAME)
     print(f"\n[{timestamp()}] Baixando {SPRINTS_PDF_NAME}...")
-    sprints_ok = download_file(session, SAIP_SPRINTS_PDF_URL, sprints_dest)
+    sprints_ok = download_file(
+        session,
+        SAIP_SPRINTS_PDF_URL,
+        sprints_dest,
+        context=SPRINTS_PDF_NAME,
+    )
+
+    write_error_registry(dirs["base"])
 
     print(f"\n[{timestamp()}] Resumo:")
     print(f"  Sprint PDFs: {sprint_pdf_ok} ok, {sprint_pdf_fail} falha(s)")
@@ -155,4 +174,5 @@ def generate_evidences(session, app_state):
     print(f"  {SAIP_PF_EXCEL_NAME}: {'ok' if excel_ok else 'falha'}")
     print(f"  Planilha Contagem PF: {'ok' if pf_ok else 'falha ou não encontrada'}")
     print(f"  {SPRINTS_PDF_NAME}: {'ok' if sprints_ok else 'falha'}")
+    print(f"  {error_registry_summary()}")
     print(f"\n[{timestamp()}] Fim! DIRETORIO_FINAL:{dirs['base']}")

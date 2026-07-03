@@ -66,11 +66,17 @@ def create_evidences_tab(on_generate, on_generate_all, on_stop, get_timestamp, a
     # ==========================================
     # BOTÃO GERAR TODOS
     # ==========================================
+    def handle_generate_all():
+        try:
+            on_generate_all(app_state["session"])
+        except Exception as e:
+            print(f"[{get_timestamp()}] ERROR: falha ao gerar todos: {e}")
+
     button_all_generate = ft.IconButton(
         icon=ft.Icons.AUTO_MODE,
         icon_color="green",
         tooltip="Gerar tudo",
-        on_click=lambda e: Thread(target=on_generate_all, args=(app_state["session"],), daemon=True).start(),
+        on_click=lambda e: Thread(target=handle_generate_all, daemon=True).start(),
     )
 
     button_stop_all = ft.IconButton(

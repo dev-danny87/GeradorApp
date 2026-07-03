@@ -11,6 +11,7 @@ from services.iphan._common import (
     safe_mkdir,
     timestamp,
 )
+from services.iphan._error_registry import record_error
 from services.iphan._wiki_backlog import resolve_wiki_assets, wiki_slug_from_url
 from services.iphan._wiki_sprints_saip import (
     SaipRow,
@@ -89,6 +90,11 @@ def download_sprint_pdfs(session, sprints: list[SaipSprintBlock], dirs: dict) ->
                 f"[{timestamp()}] WARN: sprint #{sprint.sprint_number} sem slug/URL; "
                 "PDF da sprint ignorado"
             )
+            record_error(
+                kind="other",
+                message="sprint sem slug/URL; PDF da sprint ignorado",
+                context=f"Sprint #{sprint.sprint_number}",
+            )
             fail_count += 1
             continue
 
@@ -103,7 +109,12 @@ def download_sprint_pdfs(session, sprints: list[SaipSprintBlock], dirs: dict) ->
 
         dest = os.path.join(sprint_dir, safe_filename(sprint.sprint_slug) + ".pdf")
         print(f"[{timestamp()}] Baixando sprint PDF: {sprint.sprint_slug}")
-        if download_file(session, pdf_url, dest):
+        if download_file(
+            session,
+            pdf_url,
+            dest,
+            context=f"Sprint PDF | {sprint.sprint_slug}",
+        ):
             ok_count += 1
         else:
             fail_count += 1
@@ -139,7 +150,12 @@ def download_sprint_attachments(
             if not is_app_running():
                 break
             dest = os.path.join(arquivos_dir, safe_filename(attachment.filename))
-            if download_file(session, attachment.download_url, dest):
+            if download_file(
+                session,
+                attachment.download_url,
+                dest,
+                context=f"Anexo sprint | {sprint.sprint_slug} | {attachment.filename}",
+            ):
                 ok_count += 1
             else:
                 fail_count += 1
@@ -149,7 +165,12 @@ def download_sprint_attachments(
             safe_filename(f"{sprint.sprint_slug}_arquivos.zip"),
         )
         print(f"[{timestamp()}] Baixando anexos (zip) da sprint {sprint.sprint_slug}...")
-        if download_file(session, bulk_url, dest):
+        if download_file(
+            session,
+            bulk_url,
+            dest,
+            context=f"Anexos zip | {sprint.sprint_slug}",
+        ):
             ok_count += 1
         else:
             fail_count += 1
@@ -179,11 +200,23 @@ def _download_saip_row(
         assets = resolve_wiki_assets(session, row.wiki_url)
         if not assets:
             print(f"[{timestamp()}] ERROR: não foi possível resolver PDF para {row.wiki_url}")
+            record_error(
+                kind="wiki_resolve",
+                message="não foi possível resolver PDF",
+                url=row.wiki_url,
+                context=_format_row_log(row),
+            )
             return False
         pdf_url, canonical_wiki_url = assets
         slug = wiki_slug_from_url(pdf_url) or wiki_slug_from_url(canonical_wiki_url)
         if not slug:
             print(f"[{timestamp()}] ERROR: não foi possível resolver slug para {row.wiki_url}")
+            record_error(
+                kind="wiki_resolve",
+                message="não foi possível resolver slug",
+                url=row.wiki_url,
+                context=_format_row_log(row),
+            )
             return False
         if slug != row.wiki_slug:
             print(f"[{timestamp()}] WARN: slug {row.wiki_slug} -> canônico {slug}")
@@ -200,7 +233,7 @@ def _download_saip_row(
     if source_path and os.path.isfile(source_path) and os.path.getsize(source_path) > 0:
         _copy_pdf(source_path, primary_dest)
     else:
-        if not download_file(session, pdf_url, primary_dest):
+        if not download_file(session, pdf_url, primary_dest, context=_format_row_log(row)):
             return False
         if not os.path.isfile(primary_dest) or os.path.getsize(primary_dest) == 0:
             return False
@@ -285,5 +318,6 @@ def download_saip_rows(session, rows: list[SaipRow], dirs: dict) -> tuple[int, i
             except Exception as exc:
                 fail_count += 1
                 print(f"[{timestamp()}] ERROR: falha ao baixar wiki PDF: {exc}")
+                record_error(kind="download", message=str(exc), context="wiki PDF SAIP (thread)")
 
     return ok_count, fail_count
