@@ -5,9 +5,15 @@ import calendar
 import json
 from threading import Thread
 
-# Presumindo que estes existam no seu projeto
 from utils.ui_components import DatePickerField
-from services.gitlab_service import fetch_active_projects, extract_project_diff_for_day
+from utils.month_selector import (
+    apply_month_to_date_pickers,
+    create_month_shortcut_dropdown,
+    current_month_key,
+    month_bounds,
+)
+from services.gitlab_service import fetch_accessible_projects, extract_project_diff_for_day
+from services.github_service import fetch_accessible_repositories, extract_repo_diff_for_day
 from services.ai_api_request import analyze_diffs_grouped_with_claude, MODEL_CONFIGS
 from diff_task_automation import create_ai_redmine_tasks
 
@@ -61,49 +67,63 @@ def _load_tasks_from_results(folder_name: str) -> list:
 
 
 def create_diffs_tab(app_state, set_auth, sync_callbacks):
-    checkbox_controls = []
-
     lbl_logged_in = ft.Text("", color="green", weight=ft.FontWeight.BOLD, size=14)
     lbl_status = ft.Text("", visible=False, weight=ft.FontWeight.BOLD)
     progress_ring = ft.ProgressRing(visible=False, width=20, height=20)
 
     hoje = datetime.datetime.now().date()
-    semana_passada = hoje - datetime.timedelta(days=7)
+    inicio_mes, fim_mes = month_bounds(hoje)
 
-    txt_author = ft.TextField(label="Autor (Username GitLab)", width=300, icon=ft.Icons.PERSON_SEARCH)
-    date_start = DatePickerField(label="Data Inicial", default_date=semana_passada, width=180)
-    date_end = DatePickerField(label="Data Final", default_date=hoje, width=180, icon=ft.Icons.EVENT)
+    txt_author = ft.TextField(label="Autor (Username)", width=300, icon=ft.Icons.PERSON_SEARCH)
+    date_start = DatePickerField(label="Data Inicial", default_date=inicio_mes, width=180)
+    date_end = DatePickerField(label="Data Final", default_date=fim_mes, width=180, icon=ft.Icons.EVENT)
 
-    btn_search_projects = ft.ElevatedButton("Buscar Projetos Ativos", icon=ft.Icons.FIND_IN_PAGE, color="white",
-                                            bgcolor="orange")
-    btn_execute_diff = ft.ElevatedButton("Extrair Diffs Selecionados", icon=ft.Icons.CODE, color="white",
-                                         bgcolor="blue", visible=False)
+    def on_month_change(e):
+        if not dropdown_month.value:
+            return
+        apply_month_to_date_pickers(dropdown_month.value, date_start, date_end)
+        if date_start.page:
+            date_start.update()
+            date_end.update()
 
-    btn_select_all = ft.TextButton("Selecionar Todos", icon=ft.Icons.CHECK_BOX,
-                                   on_click=lambda e: toggle_all_checkboxes(True))
-    btn_deselect_all = ft.TextButton("Limpar Seleção", icon=ft.Icons.CHECK_BOX_OUTLINE_BLANK,
-                                     on_click=lambda e: toggle_all_checkboxes(False))
+    dropdown_month = create_month_shortcut_dropdown(
+        on_month_change,
+        value=current_month_key(hoje),
+    )
 
-    row_master_selection = ft.Row([btn_select_all, btn_deselect_all], alignment=ft.MainAxisAlignment.CENTER,
-                                  visible=False, wrap=True)
-    projects_list_container = ft.Row(spacing=10, wrap=True, alignment=ft.MainAxisAlignment.START)
+    dropdown_platform = ft.Dropdown(
+        label="Plataforma",
+        width=200,
+        options=[
+            ft.dropdown.Option(key="gitlab", text="GitLab"),
+            ft.dropdown.Option(key="github", text="GitHub"),
+        ],
+        value="gitlab",
+    )
 
-    wrapper_projects_box = ft.Container(
-        content=ft.Column([
-            ft.Text("Projetos detectados com push no período:", weight=ft.FontWeight.BOLD, size=13),
-            row_master_selection,
-            projects_list_container
-        ]),
-        padding=15,
-        border=ft.border.all(1, ft.Colors.OUTLINE),
-        border_radius=10,
-        visible=False
+    dropdown_repository = ft.Dropdown(
+        label="Repositório",
+        width=500,
+        options=[],
+    )
+
+    btn_load_repositories = ft.ElevatedButton(
+        "Carregar Repositórios",
+        icon=ft.Icons.FOLDER_OPEN,
+        color="white",
+        bgcolor="orange",
+    )
+    btn_execute_diff = ft.ElevatedButton(
+        "Extrair Diffs",
+        icon=ft.Icons.CODE,
+        color="white",
+        bgcolor="blue",
+        visible=False,
     )
 
     # --- COMPONENTES DA IA ---
     dropdown_folders = ft.Dropdown(label="Pasta de Diffs Exportados", width=350)
 
-    # DROPDOWN DE MODELOS ATUALIZADO
     dropdown_model = ft.Dropdown(
         label="Modelo de IA",
         width=350,
@@ -111,55 +131,95 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
             ft.dropdown.Option(key=model_key, text=model_key)
             for model_key in MODEL_CONFIGS.keys()
         ],
-        value=list(MODEL_CONFIGS.keys())[0]  # Seleciona o primeiro da lista como padrão
+        value=list(MODEL_CONFIGS.keys())[0],
     )
 
     txt_ai_hours = ft.TextField(
         label="Total de Horas",
         width=150,
-        input_filter=ft.InputFilter(allow=True, regex_string=r"^[0-9.]*$", replacement_string="")
+        input_filter=ft.InputFilter(allow=True, regex_string=r"^[0-9.]*$", replacement_string=""),
     )
 
     btn_process_ai = ft.ElevatedButton("Processar com IA", icon=ft.Icons.AUTO_AWESOME, color="white", bgcolor="purple")
-    btn_create_redmine_tasks = ft.ElevatedButton("Gerar Tarefas no Redmine", icon=ft.Icons.CLOUD_UPLOAD,
-                                                 bgcolor="blue_700", color="white", visible=False)
+    btn_create_redmine_tasks = ft.ElevatedButton(
+        "Gerar Tarefas no Redmine",
+        icon=ft.Icons.CLOUD_UPLOAD,
+        bgcolor="blue_700",
+        color="white",
+        visible=False,
+    )
 
     wrapper_ai_box = ft.Container(
         content=ft.Column([
             ft.Text("Análise Inteligente e Geração de Tarefas", weight=ft.FontWeight.BOLD, size=15, color="purple"),
             ft.Row([dropdown_model, dropdown_folders, txt_ai_hours], alignment=ft.MainAxisAlignment.START, wrap=True),
-            ft.Row([btn_process_ai, btn_create_redmine_tasks], alignment=ft.MainAxisAlignment.START,
-                   wrap=True)
+            ft.Row([btn_process_ai, btn_create_redmine_tasks], alignment=ft.MainAxisAlignment.START, wrap=True),
         ]),
-        padding=15, border=ft.border.all(1, ft.Colors.PURPLE_300), border_radius=10, visible=False
+        padding=15,
+        border=ft.border.all(1, ft.Colors.PURPLE_300),
+        border_radius=10,
+        visible=False,
     )
 
     user_header = ft.Row([
         ft.Icon(ft.Icons.PERSON, color="green", size=20),
         lbl_logged_in,
-        ft.IconButton(icon=ft.Icons.LOGOUT, icon_color="red", icon_size=20, tooltip="Sair da conta",
-                      on_click=lambda e: set_auth(None, None, False))
+        ft.IconButton(
+            icon=ft.Icons.LOGOUT,
+            icon_color="red",
+            icon_size=20,
+            tooltip="Sair da conta",
+            on_click=lambda e: set_auth(None, None, False),
+        ),
     ], alignment=ft.MainAxisAlignment.END)
 
     diffs_view = ft.Column([
         user_header,
         ft.Text("Extração de Modificações por Repositório Escolhido", size=16, weight=ft.FontWeight.BOLD),
         ft.Row([txt_author], alignment=ft.MainAxisAlignment.CENTER),
+        ft.Row([dropdown_month], alignment=ft.MainAxisAlignment.CENTER),
         ft.Row(
             [date_start, date_end],
             alignment=ft.MainAxisAlignment.CENTER,
             spacing=20,
             tight=True,
         ),
-        ft.Row([btn_search_projects, progress_ring], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
-        wrapper_projects_box,
-        ft.Row([btn_execute_diff], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
+        ft.Row(
+            [dropdown_platform, dropdown_repository],
+            alignment=ft.MainAxisAlignment.CENTER,
+            wrap=True,
+            spacing=15,
+        ),
+        ft.Row([btn_load_repositories, btn_execute_diff, progress_ring], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
         wrapper_ai_box,
-        lbl_status
+        lbl_status,
     ], alignment=ft.MainAxisAlignment.START, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=15, expand=True,
         scroll=ft.ScrollMode.AUTO)
 
-    # --- LÓGICA DE EVENTOS ---
+    def show_status(text: str, color: str):
+        lbl_status.value = text
+        lbl_status.color = color
+        lbl_status.visible = True
+
+    def _clear_repository_selection():
+        dropdown_repository.options.clear()
+        dropdown_repository.value = None
+        btn_execute_diff.visible = False
+
+    def on_platform_change(e):
+        _clear_repository_selection()
+        if diffs_view.page:
+            diffs_view.update()
+
+    dropdown_platform.on_change = on_platform_change
+
+    def on_repository_change(e):
+        btn_execute_diff.visible = bool(dropdown_repository.value)
+        if diffs_view.page:
+            diffs_view.update()
+
+    dropdown_repository.on_change = on_repository_change
+
     def handle_folder_change(e):
         folder_name = dropdown_folders.value
         if folder_name:
@@ -203,7 +263,7 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
                     start_date,
                     end_date,
                     app_state["user"],
-                    subtasks_list
+                    subtasks_list,
                 )
                 show_status("Processo de criação no Redmine finalizado!", "green")
 
@@ -220,11 +280,6 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
 
     btn_create_redmine_tasks.on_click = handle_create_redmine_tasks
 
-    def toggle_all_checkboxes(select_state: bool):
-        for cb in checkbox_controls:
-            cb.value = select_state
-        projects_list_container.update()
-
     def refresh_ai_folders():
         diffs_dir = os.path.join(".", "diffs")
         dropdown_folders.options.clear()
@@ -235,8 +290,10 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
             if folders:
                 for folder in sorted(folders, reverse=True):
                     folder_path = os.path.join(diffs_dir, folder)
-                    subfolders = [sub for sub in os.listdir(folder_path) if
-                                  os.path.isdir(os.path.join(folder_path, sub))]
+                    subfolders = [
+                        sub for sub in os.listdir(folder_path)
+                        if os.path.isdir(os.path.join(folder_path, sub))
+                    ]
 
                     display_text = f"{folder} (Contém {len(subfolders)} subpasta(s))" if subfolders else folder
                     dropdown_folders.options.append(ft.dropdown.Option(key=folder, text=display_text))
@@ -246,67 +303,68 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
         if diffs_view.page:
             diffs_view.update()
 
-    def handle_search_projects(e):
-        author = txt_author.value.strip()
-        s_date = date_start.value.strip()
-        e_date = date_end.value.strip()
-
-        if not author or not s_date or not e_date:
-            show_status("Preencha o autor e as datas limite para prosseguir.", "red")
+    def handle_load_repositories(e):
+        platform = dropdown_platform.value
+        if not platform:
+            show_status("Selecione uma plataforma.", "red")
             return
 
-        btn_search_projects.disabled = True
+        btn_load_repositories.disabled = True
         progress_ring.visible = True
-        show_status("Mapeando histórico de atividades...", "blue")
+        show_status(f"Carregando repositórios ({platform})...", "blue")
         diffs_view.update()
 
-        def bg_search():
+        def bg_load():
             try:
-                projects = fetch_active_projects(author, s_date, e_date)
-                checkbox_controls.clear()
-                projects_list_container.controls.clear()
+                if platform == "gitlab":
+                    repos = fetch_accessible_projects()
+                    dropdown_repository.options = [
+                        ft.dropdown.Option(key=str(repo["id"]), text=repo["name"])
+                        for repo in repos
+                    ]
+                else:
+                    repos = fetch_accessible_repositories()
+                    dropdown_repository.options = [
+                        ft.dropdown.Option(key=repo["full_name"], text=repo["name"])
+                        for repo in repos
+                    ]
 
-                if not projects:
-                    wrapper_projects_box.visible = False
-                    btn_execute_diff.visible = False
-                    show_status(f"Nenhum repositório modificado por '{author}' neste período.", "orange")
-                    return
-
-                for proj in projects:
-                    cb = ft.Checkbox(value=True, data=proj['id'])
-                    checkbox_controls.append(cb)
-                    full_label = f"{proj['name']} (ID: {proj['id']})"
-                    label_text = ft.Text(value=full_label, overflow=ft.TextOverflow.ELLIPSIS, max_lines=1, expand=True)
-
-                    item_container = ft.Container(
-                        content=ft.Row([cb, label_text], alignment=ft.MainAxisAlignment.START),
-                        width=350, tooltip=full_label
+                if repos:
+                    dropdown_repository.value = (
+                        str(repos[0]["id"]) if platform == "gitlab" else repos[0]["full_name"]
                     )
-                    projects_list_container.controls.append(item_container)
-
-                wrapper_projects_box.visible = True
-                row_master_selection.visible = True
-                btn_execute_diff.visible = True
-                show_status(f"Mapeamento concluído. {len(projects)} projetos listados.", "green")
+                    btn_execute_diff.visible = True
+                    show_status(f"{len(repos)} repositório(s) carregado(s).", "green")
+                else:
+                    dropdown_repository.value = None
+                    btn_execute_diff.visible = False
+                    show_status("Nenhum repositório encontrado para o token configurado.", "orange")
 
             except Exception as ex:
-                wrapper_projects_box.visible = False
-                btn_execute_diff.visible = False
-                show_status(f"Falha na comunicação com o GitLab: {str(ex)}", "red")
+                _clear_repository_selection()
+                show_status(f"Falha ao carregar repositórios: {str(ex)}", "red")
             finally:
-                btn_search_projects.disabled = False
+                btn_load_repositories.disabled = False
                 progress_ring.visible = False
                 diffs_view.update()
 
-        Thread(target=bg_search, daemon=True).start()
+        Thread(target=bg_load, daemon=True).start()
 
     def handle_execute_diff(e):
-        selected_project_ids = [cb.data for cb in checkbox_controls if cb.value]
-        if not selected_project_ids:
-            show_status("Selecione ao menos um projeto.", "red")
+        platform = dropdown_platform.value
+        repository = dropdown_repository.value
+        author = txt_author.value.strip()
+
+        if not platform:
+            show_status("Selecione uma plataforma.", "red")
+            return
+        if not repository:
+            show_status("Selecione um repositório.", "red")
+            return
+        if not author:
+            show_status("Preencha o autor para prosseguir.", "red")
             return
 
-        author = txt_author.value.strip()
         try:
             start_date = datetime.datetime.strptime(date_start.value.strip(), "%Y-%m-%d").date()
             end_date = datetime.datetime.strptime(date_end.value.strip(), "%Y-%m-%d").date()
@@ -331,7 +389,15 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
                     show_status(f"Compilando arquivos do dia {current_date_str}...", "blue")
                     diffs_view.update()
 
-                    diff_content = extract_project_diff_for_day(author, current_date_str, selected_project_ids)
+                    if platform == "gitlab":
+                        diff_content = extract_project_diff_for_day(
+                            author, current_date_str, [int(repository)]
+                        )
+                    else:
+                        diff_content = extract_repo_diff_for_day(
+                            author, current_date_str, repository
+                        )
+
                     if diff_content is None:
                         continue
 
@@ -440,11 +506,6 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
 
         Thread(target=bg_ai_process, daemon=True).start()
 
-    def show_status(text: str, color: str):
-        lbl_status.value = text
-        lbl_status.color = color
-        lbl_status.visible = True
-
     def sync_ui():
         refresh_ai_folders()
         if app_state["session"]:
@@ -453,14 +514,14 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
                 txt_author.value = app_state["user"]
         else:
             lbl_status.visible = False
-            wrapper_projects_box.visible = False
             btn_execute_diff.visible = False
             btn_create_redmine_tasks.visible = False
             txt_author.value = ""
+            _clear_repository_selection()
 
     sync_callbacks.append(sync_ui)
 
-    btn_search_projects.on_click = handle_search_projects
+    btn_load_repositories.on_click = handle_load_repositories
     btn_execute_diff.on_click = handle_execute_diff
     btn_process_ai.on_click = handle_process_ai
 
@@ -469,5 +530,5 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks):
     return ft.Tab(
         text="Extrair Diffs",
         icon=ft.Icons.CODE_OFF,
-        content=ft.Container(content=diffs_view, padding=20, expand=True)
+        content=ft.Container(content=diffs_view, padding=20, expand=True),
     )

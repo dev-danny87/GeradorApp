@@ -1,8 +1,12 @@
+import calendar
 import datetime
 from collections.abc import Callable
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import flet as ft
+
+if TYPE_CHECKING:
+    from utils.ui_components import DatePickerField
 
 MONTH_NAMES = (
     "Janeiro",
@@ -42,6 +46,23 @@ def month_options(count: int = 24) -> list[tuple[str, str]]:
             year -= 1
 
     return options
+
+
+def month_bounds(reference: datetime.date | None = None) -> tuple[datetime.date, datetime.date]:
+    reference = reference or datetime.date.today()
+    last_day = calendar.monthrange(reference.year, reference.month)[1]
+    return reference.replace(day=1), reference.replace(day=last_day)
+
+
+def apply_month_to_date_pickers(
+    month_key: str,
+    date_start: "DatePickerField",
+    date_end: "DatePickerField",
+) -> None:
+    year_str, month_str = month_key.split("-", 1)
+    start_date, end_date = month_bounds(datetime.date(int(year_str), int(month_str), 1))
+    date_start.set_date(start_date)
+    date_end.set_date(end_date)
 
 
 def month_label_for_key(month_key: str) -> str:

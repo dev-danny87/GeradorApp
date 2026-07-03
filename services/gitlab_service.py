@@ -48,6 +48,46 @@ def _get_project_name(project_id: int) -> str:
         return f"Projeto ID {project_id}"
 
 
+def fetch_accessible_projects() -> list:
+    """
+    Lista projetos GitLab acessíveis ao token (membership=true).
+    Retorna [{"id": int, "name": str, "path_with_namespace": str}, ...].
+    """
+    projects_data = []
+    page = 1
+
+    while True:
+        url = f"{GITLAB_BASE_URL}/projects"
+        params = {
+            "membership": "true",
+            "simple": "true",
+            "per_page": 100,
+            "page": page,
+            "order_by": "name",
+            "sort": "asc",
+        }
+        r = requests.get(url, headers=_get_headers(), params=params)
+        r.raise_for_status()
+        projects = r.json()
+
+        if not projects:
+            break
+
+        for project in projects:
+            projects_data.append({
+                "id": project["id"],
+                "name": project.get("name_with_namespace") or project.get("name", f"Projeto ID {project['id']}"),
+                "path_with_namespace": project.get("path_with_namespace", ""),
+            })
+
+        total_pages = int(r.headers.get("X-Total-Pages", 1))
+        if page >= total_pages:
+            break
+        page += 1
+
+    return projects_data
+
+
 def fetch_active_projects(username: str, start_date_str: str, end_date_str: str) -> list:
     """
     Varre os eventos de push do usuário no intervalo selecionado,

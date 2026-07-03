@@ -1,13 +1,18 @@
 # tab_tasks.py
 import flet as ft
 import datetime
-import calendar
 import json
 from threading import Thread
 
 from task_automation import create_redmine_issue
 from utils.ui_components import DatePickerField
 from utils.redmine_version import get_dynamic_version
+from utils.month_selector import (
+    apply_month_to_date_pickers,
+    create_month_shortcut_dropdown,
+    current_month_key,
+    month_bounds,
+)
 from redmine_mappings import (
     SYSTEM_OPTIONS,
     ORGAN_OPTIONS,
@@ -60,9 +65,7 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
     lbl_form_error = ft.Text("", color="red", visible=False, weight=ft.FontWeight.BOLD)
 
     hoje = datetime.datetime.now().date()
-    inicio_mes = hoje.replace(day=1)
-    ultimo_dia = calendar.monthrange(hoje.year, hoje.month)[1]
-    fim_mes = hoje.replace(day=ultimo_dia)
+    inicio_mes, fim_mes = month_bounds(hoje)
 
     date_start = DatePickerField(
         label="Data de Início (Sprint)",
@@ -75,6 +78,19 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         default_date=fim_mes,
         width=200,
         icon=ft.Icons.EVENT,
+    )
+
+    def on_month_change(e):
+        if not dropdown_month.value:
+            return
+        apply_month_to_date_pickers(dropdown_month.value, date_start, date_due)
+        if date_start.page:
+            date_start.update()
+            date_due.update()
+
+    dropdown_month = create_month_shortcut_dropdown(
+        on_month_change,
+        value=current_month_key(hoje),
     )
 
     _default_versao = get_dynamic_version()
@@ -129,21 +145,26 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
 
     def _reset_field_defaults():
         agora = datetime.datetime.now().date()
-        ultimo = calendar.monthrange(agora.year, agora.month)[1]
+        inicio, fim = month_bounds(agora)
+        dropdown_month.value = current_month_key(agora)
         dropdown_sistema.value = _DEFAULT_SISTEMA
         dropdown_orgao.value = _DEFAULT_ORGAO
         dropdown_atribuicao.value = _DEFAULT_ATRIBUICAO
         dropdown_projeto.value = _DEFAULT_PROJETO
         txt_notas.value = ""
         txt_versao.value = get_dynamic_version()
-        date_start.set_date(agora.replace(day=1))
-        date_due.set_date(agora.replace(day=ultimo))
+        date_start.set_date(inicio)
+        date_due.set_date(fim)
 
     task_view = ft.Column([
         user_header,
         ft.Text(
             "Defina as datas da Sprint e insira as subtarefas no formato JSON com a chave 'tasks'.",
             weight=ft.FontWeight.BOLD,
+        ),
+        ft.Row(
+            [dropdown_month],
+            alignment=ft.MainAxisAlignment.CENTER,
         ),
         ft.Row(
             [date_start, date_due],
