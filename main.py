@@ -9,6 +9,7 @@ import re
 import time
 import unicodedata
 import urllib.parse
+from urllib.parse import urlencode
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -23,7 +24,7 @@ from services.auth_service import login_redmine, SSP_BASE_URL, PGE_BASE_URL, IPH
 from services.pge_evidence_service import generate_evidences_pge, set_app_run as set_pge_app_run
 from services.iphan.registry import get_service as get_iphan_service
 from services.iphan._common import set_app_run as set_iphan_app_run
-from utils.output_paths import build_ssp_run_dir
+from utils.output_paths import build_ssp_run_dir, month_label_from_date
 
 VERSION = "evidences-v2.1-2025-09-12"
 
@@ -177,8 +178,26 @@ def download_file(session: requests.Session, url: str, dest_path: str, max_retri
 # ==============================
 # Core Logic
 # ==============================
+def build_ssp_closed_on_query(start_date: str, end_date: str) -> str:
+    params = [
+        ("set_filter", "1"),
+        ("f[]", "closed_on"),
+        ("op[closed_on]", "><"),
+        ("v[closed_on][]", start_date),
+        ("v[closed_on][]", end_date),
+    ]
+    return urlencode(params)
+
+
 # ADICIONADO: O argumento `session` foi injetado aqui
-def generate_evidences(session, strPathRedmineQueryId: str, projeto: str, exception: str):
+def generate_evidences(
+    session,
+    strPathRedmineQueryId: str,
+    projeto: str,
+    exception: str,
+    start_date: str,
+    end_date: str,
+):
     project_id_map = {
         "hpm": "pm-130-2022",
         "procon-go": "procon-go",
@@ -198,15 +217,34 @@ def generate_evidences(session, strPathRedmineQueryId: str, projeto: str, except
         url_pdf_geral = URL_PDF_GERAL
         url_csv_geral = URL_CSV_GERAL
 
+    if not start_date or not end_date:
+        print(f"[{timestamp()}] ERROR: Informe as datas inicial e final (closed_on).")
+        return
+
+    try:
+        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+        if start_dt > end_dt:
+            print(f"[{timestamp()}] ERROR: Data inicial não pode ser posterior à data final.")
+            return
+    except ValueError:
+        print(f"[{timestamp()}] ERROR: Formato de data inválido. Use YYYY-MM-DD.")
+        return
+
+    closed_on_suffix = build_ssp_closed_on_query(start_date, end_date)
+
     try:
         locale.setlocale(locale.LC_ALL, "pt_BR.UTF-8")
     except Exception:
         pass
 
-    base_out_dir = build_ssp_run_dir(projeto)
+    month_label = month_label_from_date(start_dt)
+    base_out_dir = build_ssp_run_dir(projeto, month_label)
 
     def get_redmine_page(session: requests.Session, page_num: int):
-        full_url = f"{base_list_url}page={page_num}&query_id={strPathRedmineQueryId}"
+        full_url = (
+            f"{base_list_url}page={page_num}&query_id={strPathRedmineQueryId}&{closed_on_suffix}"
+        )
         print(f"[{timestamp()}] Fetching page {page_num}: {full_url}")
         r = http_get(session, full_url)
         soup = BeautifulSoup(r.text, "html.parser")
@@ -226,7 +264,10 @@ def generate_evidences(session, strPathRedmineQueryId: str, projeto: str, except
 
     clear()
     print(f"\n[{timestamp()}] Preparando para gerar evidências a partir do Redmine...")
-    print(f"Query ID: {strPathRedmineQueryId} | Pasta de saída: {base_out_dir}")
+    print(
+        f"Query ID: {strPathRedmineQueryId} | closed_on: {start_date} .. {end_date} | "
+        f"Pasta de saída: {base_out_dir}"
+    )
 
     if not session:
         print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")
@@ -329,12 +370,12 @@ def generate_evidences(session, strPathRedmineQueryId: str, projeto: str, except
                 download_file(session, dl, dest)
 
     print(f"\n[{timestamp()}] Gerando PDF da consulta...")
-    url_pdf_query = f"{url_pdf_geral}{strPathRedmineQueryId}"
+    url_pdf_query = f"{url_pdf_geral}{strPathRedmineQueryId}&{closed_on_suffix}"
     dest_pdf_query = os.path.join(base_out_dir, RELATORIO_PDF_NOME)
     download_file(session, url_pdf_query, dest_pdf_query)
 
     print(f"\n[{timestamp()}] Gerando CSV (issues) da consulta...")
-    url_csv_query = f"{url_csv_geral}{strPathRedmineQueryId}"
+    url_csv_query = f"{url_csv_geral}{strPathRedmineQueryId}&{closed_on_suffix}"
     dest_csv_query = os.path.join(base_out_dir, RELATORIO_CSV_NOME)
     download_file(session, url_csv_query, dest_csv_query)
 
@@ -373,7 +414,7 @@ def generate_evidences_iphan(session, project_key, app_state):
 
 
 # ADICIONADO: O argumento `session` foi injetado aqui também
-def generate_all_evidences(session):
+def generate_all_evidences(session, start_date: str, end_date: str):
     global app_run
     app_run = True
 
@@ -381,7 +422,12 @@ def generate_all_evidences(session):
         print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")
         return
 
+    if not start_date or not end_date:
+        print(f"[{timestamp()}] ERROR: Informe as datas inicial e final (closed_on).")
+        return
+
     print(f"\n[{timestamp()}] Iniciando geração em lote (todos os projetos SSP)...")
+    print(f"[{timestamp()}] Período closed_on: {start_date} .. {end_date}")
 
     batch = [
         ("120", "contrato_hpm", "hpm"),
@@ -395,7 +441,7 @@ def generate_all_evidences(session):
         if not app_run:
             break
         print(f"\n[{timestamp()}] Iniciando geração para: {project_label}")
-        generate_evidences(session, query_id, project_label, exception_type)
+        generate_evidences(session, query_id, project_label, exception_type, start_date, end_date)
         time.sleep(2)
 
 

@@ -50,12 +50,13 @@ def month_run_folder_name(month_label: str) -> str:
     return f"{month_token(month_label)}_{run_stamp()}"
 
 
-def build_ssp_run_dir(projeto: str) -> str:
+def build_ssp_run_dir(projeto: str, month_label: str | None = None) -> str:
+    month_folder = month_run_folder_name(month_label) if month_label else run_stamp()
     path = os.path.join(
         ".",
         RELATORIOS_ROOT,
         HOST_SSP,
-        day_stamp(),
+        month_folder,
         safe_segment(projeto),
         run_stamp(),
     )
