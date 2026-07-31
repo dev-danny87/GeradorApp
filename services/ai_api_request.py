@@ -2,23 +2,19 @@ import os
 import json
 import requests
 from typing import Callable, Optional
-from dotenv import load_dotenv
+from utils.app_config import get_config
 
-load_dotenv()
-
-# --- Configuration ---
-CLAUDE_API_KEY = os.getenv("CLAUDE_KEY")
+# --- Configuration (resolved via get_config at call time) ---
 CLAUDE_BASE_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_DIFF_CHARS = 150_000
-MAX_GROUP_CHARS = 120_000
+MAX_UNIT_CHARS = 120_000
 FILE_SEPARATOR_OVERHEAD = 80
 MIN_DIFF_CHARS = 150
 
 MODEL_CONFIGS = {
     "claude-sonnet-5": {
         "max_tokens": 65536,
-        "thinking": {"type": "disabled"},
     },
     "claude-opus-4-8": {
         "max_tokens": 16384,
@@ -76,10 +72,11 @@ ProgressCallback = Callable[[int, int, str], None]
 
 
 def _get_headers() -> dict:
-    if not CLAUDE_API_KEY:
-        raise ValueError("CLAUDE_KEY não encontrada no arquivo .env!")
+    api_key = get_config("CLAUDE_KEY")
+    if not api_key:
+        raise ValueError("CLAUDE_KEY não encontrada no .env nem em ~/ge.txt!")
     return {
-        "x-api-key": CLAUDE_API_KEY,
+        "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json"
     }
@@ -94,7 +91,7 @@ def _truncate_diff(diff_content: str) -> str:
 def _extract_json_from_response(raw_content: str) -> dict:
     raw_content = raw_content.strip()
 
-    # Fallback cleanup in case any rogue markdown bypassed the prefill
+    # Fallback cleanup in case the model wraps JSON in markdown fences
     if "```json" in raw_content:
         raw_content = raw_content.split("```json")[-1].split("```")[0].strip()
     elif raw_content.startswith("```"):
@@ -111,12 +108,10 @@ def _extract_json_from_response(raw_content: str) -> dict:
     return parsed
 
 
-def _extract_text_from_message(payload: dict, prefilled: bool = True) -> str:
+def _extract_text_from_message(payload: dict) -> str:
     for block in payload.get("content", []):
         if block.get("type") == "text" and "text" in block:
-            text = block["text"]
-            # Reattach the opening brace that we prefilled via the API
-            return "{" + text if prefilled else text
+            return block["text"]
     raise KeyError("No text block in API response content")
 
 
@@ -125,17 +120,12 @@ def _build_request_params(
         system_prompt: str,
         user_content: str,
         max_tokens: int,
-        prefill_json: bool = True
 ) -> dict:
     model_params = dict(MODEL_CONFIGS.get(selected_model, {"max_tokens": 4096}))
     model_params["max_tokens"] = max_tokens
 
+    # Conversation must end with a user message; newer Claude models reject assistant prefills.
     messages = [{"role": "user", "content": user_content}]
-
-    # Assistant prefill trick to mathematically guarantee the AI outputs JSON
-    # and ignores any urge to wrap it in markdown block quotes.
-    if prefill_json:
-        messages.append({"role": "assistant", "content": "{"})
 
     request_params = {
         "model": selected_model,
@@ -157,7 +147,6 @@ def _repair_json_with_claude(broken_json: str, selected_model: str) -> dict:
         repair_prompt,
         f"Fix this JSON:\n{broken_json}",
         max_tokens,
-        prefill_json=True
     )
 
     response = requests.post(
@@ -168,7 +157,7 @@ def _repair_json_with_claude(broken_json: str, selected_model: str) -> dict:
     )
     response.raise_for_status()
     payload = response.json()
-    raw_text = _extract_text_from_message(payload, prefilled=True)
+    raw_text = _extract_text_from_message(payload)
     return _extract_json_from_response(raw_text)
 
 
@@ -184,11 +173,12 @@ def _serialize_tasks_json(tasks: list) -> str:
     return json.dumps({"tasks": tasks}, ensure_ascii=False, separators=(",", ":"))
 
 
-def _save_group_checkpoint(
+def _save_units_checkpoint(
         output_dir: Optional[str],
-        completed_groups: int,
-        group_tasks: list[dict],
-        last_group_label: str,
+        total_units: int,
+        processed_labels: list[str],
+        failed_labels: list[str],
+        unit_tasks: list[dict],
 ) -> None:
     if not output_dir:
         return
@@ -196,15 +186,55 @@ def _save_group_checkpoint(
     with open(checkpoint_path, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "completed_groups": completed_groups,
-                "group_tasks": group_tasks,
-                "last_group_label": last_group_label,
+                "completed_units": len(processed_labels),
+                "total_units": total_units,
+                "processed_labels": processed_labels,
+                "failed_labels": failed_labels,
+                "unit_tasks": unit_tasks,
             },
             f,
             ensure_ascii=False,
             indent=2,
         )
-    print(f"[API INFO] Checkpoint salvo: {checkpoint_path} (grupo {completed_groups})")
+    print(
+        f"[API INFO] Checkpoint salvo: {checkpoint_path} "
+        f"({len(processed_labels)}/{total_units} arquivo(s))"
+    )
+
+
+def _load_units_checkpoint(output_dir: Optional[str]) -> dict:
+    """Previously completed units, so a rerun does not re-spend tokens."""
+    empty = {"processed_labels": [], "failed_labels": [], "unit_tasks": []}
+    if not output_dir:
+        return empty
+
+    checkpoint_path = os.path.join(output_dir, CHECKPOINT_FILENAME)
+    if not os.path.exists(checkpoint_path):
+        return empty
+
+    try:
+        with open(checkpoint_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as ex:
+        print(f"[API WARN] Checkpoint inválido ignorado ({ex}).")
+        return empty
+
+    if not isinstance(data, dict):
+        return empty
+
+    processed = [str(label) for label in data.get("processed_labels", []) if label]
+    unit_tasks = [item for item in data.get("unit_tasks", []) if isinstance(item, dict)]
+
+    # Labels and payloads must line up for the resume mapping to be trustworthy.
+    if len(processed) != len(unit_tasks):
+        print("[API WARN] Checkpoint inconsistente (labels != tarefas). Reprocessando tudo.")
+        return empty
+
+    return {
+        "processed_labels": processed,
+        "failed_labels": [str(label) for label in data.get("failed_labels", []) if label],
+        "unit_tasks": unit_tasks,
+    }
 
 
 def _parse_message_response(payload: dict, selected_model: str) -> dict:
@@ -219,7 +249,7 @@ def _parse_message_response(payload: dict, selected_model: str) -> dict:
             "Tente reduzir o período de diffs ou use um modelo com maior capacidade."
         )
 
-    raw_text = _extract_text_from_message(payload, prefilled=True)
+    raw_text = _extract_text_from_message(payload)
     try:
         return _extract_json_from_response(raw_text)
     except json.JSONDecodeError as e:
@@ -244,7 +274,7 @@ def _call_claude_sync(
 
     for attempt, max_tokens in enumerate(token_limits):
         request_params = _build_request_params(
-            selected_model, system_prompt, user_content, max_tokens, prefill_json=True
+            selected_model, system_prompt, user_content, max_tokens
         )
 
         for json_attempt in range(2):
@@ -310,66 +340,73 @@ def _file_entry_size(name: str, content: str) -> int:
     return len(_truncate_diff(content.strip())) + FILE_SEPARATOR_OVERHEAD + len(name)
 
 
-def _estimate_group_size(items: list[tuple[str, str]]) -> int:
-    return sum(_file_entry_size(name, content) for name, content in items)
+def _split_oversized_content(content: str) -> list[str]:
+    """Split at line boundaries so nothing is dropped by truncation."""
+    chunks: list[str] = []
+    current: list[str] = []
+    current_size = 0
+
+    for line in content.splitlines(keepends=True):
+        line_size = len(line)
+
+        # A single line longer than the budget is sliced as a last resort.
+        if line_size > MAX_UNIT_CHARS:
+            if current:
+                chunks.append("".join(current))
+                current = []
+                current_size = 0
+            for start in range(0, line_size, MAX_UNIT_CHARS):
+                chunks.append(line[start:start + MAX_UNIT_CHARS])
+            continue
+
+        if current and current_size + line_size > MAX_UNIT_CHARS:
+            chunks.append("".join(current))
+            current = [line]
+            current_size = line_size
+        else:
+            current.append(line)
+            current_size += line_size
+
+    if current:
+        chunks.append("".join(current))
+
+    return [chunk for chunk in chunks if chunk.strip()] or [content]
 
 
-def _group_diff_items_by_size(diff_items: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
-    non_empty: list[tuple[str, str]] = []
+def _build_diff_units(diff_items: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
+    """
+    One unit per diff file, so each API call stays well below the token limit.
+
+    Returns (label, filename, content) tuples. Files larger than MAX_UNIT_CHARS
+    become several sequential chunks instead of being truncated.
+    """
+    units: list[tuple[str, str, str]] = []
+
     for name, content in diff_items:
         if _is_empty_diff(content):
             print(f"[API INFO] Pulando diff vazio: {name}")
             continue
-        non_empty.append((name, content))
 
-    if not non_empty:
-        return []
-
-    groups: list[list[tuple[str, str]]] = []
-    current: list[tuple[str, str]] = []
-    current_size = 0
-
-    for name, content in non_empty:
-        entry_size = _file_entry_size(name, content)
-
-        if entry_size > MAX_GROUP_CHARS:
-            if current:
-                groups.append(current)
-                current = []
-                current_size = 0
-            groups.append([(name, content)])
+        stripped = content.strip()
+        if _file_entry_size(name, stripped) <= MAX_UNIT_CHARS:
+            units.append((name, name, stripped))
             continue
 
-        if current and current_size + entry_size > MAX_GROUP_CHARS:
-            groups.append(current)
-            current = [(name, content)]
-            current_size = entry_size
-        else:
-            current.append((name, content))
-            current_size += entry_size
+        chunks = _split_oversized_content(stripped)
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            label = f"{name} (parte {index}/{total})" if total > 1 else name
+            units.append((label, name, chunk.strip()))
 
-    if current:
-        groups.append(current)
-    return groups
+    return units
 
 
-def _format_group_diffs(group: list[tuple[str, str]]) -> str:
-    parts = []
-    for name, content in group:
-        parts.append(f"--- FILE: {name} ---\n{_truncate_diff(content.strip())}")
-    return "\n\n".join(parts)
+def _format_unit_diff(filename: str, label: str, content: str) -> str:
+    header = filename if label == filename else label
+    return f"--- FILE: {header} ---\n{content}"
 
 
-def _group_label(group: list[tuple[str, str]]) -> str:
-    if len(group) == 1:
-        return group[0][0]
-    names = ", ".join(name for name, _ in group[:3])
-    if len(group) > 3:
-        names += f" (+{len(group) - 3} mais)"
-    return names
-
-
-def _build_group_create_prompt() -> str:
+def _build_task_create_prompt() -> str:
     return f"""You are an expert Software Architect and Technical Project Manager. Your task is to analyze git diffs and create a structured, development-ready task list.
 
 <instructions>
@@ -398,9 +435,9 @@ def _build_group_create_prompt() -> str:
 </output_schema>"""
 
 
-def _flatten_group_tasks(group_tasks: list[dict]) -> list[dict]:
+def _flatten_unit_tasks(unit_tasks: list[dict]) -> list[dict]:
     flat: list[dict] = []
-    for payload in group_tasks:
+    for payload in unit_tasks:
         flat.extend(payload.get("tasks", []))
     return flat
 
@@ -594,48 +631,110 @@ def analyze_diffs_grouped_with_claude(
         selected_model: str,
         on_progress: Optional[ProgressCallback] = None,
         output_dir: Optional[str] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """
-    Processes diffs in size-based groups:
-    1. Each group  -> independently creates tasks from combined diffs
-    2. Merge step  -> deduplicates/consolidates all group task lists
+    Processes one diff file per request:
+    1. Each file   -> independently creates tasks (checkpointed after every file)
+    2. Merge step  -> deduplicates/consolidates all task lists
     3. Final step  -> reconciles estimated_hours to total_hours
+
+    Files already recorded in the checkpoint are skipped, and `should_cancel`
+    stops the run before the next request is issued.
     """
     if not diff_items:
         raise ValueError("Nenhum diff fornecido para análise.")
 
-    groups = _group_diff_items_by_size(diff_items)
-    if not groups:
+    units = _build_diff_units(diff_items)
+    if not units:
         raise ValueError("Nenhum diff com conteúdo válido encontrado para análise.")
 
-    total_steps = len(groups) + 2  # groups + merge + reconcile
+    checkpoint = _load_units_checkpoint(output_dir)
+    unit_labels = {label for label, _, _ in units}
+    resumed = {
+        label: payload
+        for label, payload in zip(checkpoint["processed_labels"], checkpoint["unit_tasks"])
+        if label in unit_labels
+    }
+    if resumed:
+        print(f"[API INFO] Retomando checkpoint: {len(resumed)} arquivo(s) já processado(s).")
+
+    processed_labels: list[str] = []
+    unit_tasks: list[dict] = []
+    failed_labels: list[str] = []
+
+    total_steps = len(units) + 2  # units + merge + reconcile
     current_step = 0
-    group_tasks: list[dict] = []
+    cancelled = False
 
     def report(message: str):
         if on_progress:
             on_progress(current_step, total_steps, message)
         print(f"[API INFO] ({current_step}/{total_steps}) {message}")
 
-    for index, group in enumerate(groups, start=1):
+    for index, (label, filename, content) in enumerate(units, start=1):
         current_step = index
-        label = _group_label(group)
-        size_kb = _estimate_group_size(group) / 1024
-        report(f"Grupo {index}/{len(groups)}: {label} (~{size_kb:.0f} KB)...")
 
-        combined_diffs = _format_group_diffs(group)
-        group_payload = _call_claude_sync(
-            _build_group_create_prompt(),
-            f"Code Diffs to Analyze ({len(group)} file(s)):\n\n{combined_diffs}",
-            selected_model,
+        if label in resumed:
+            processed_labels.append(label)
+            unit_tasks.append(resumed[label])
+            report(f"Arquivo {index}/{len(units)}: {label} (do checkpoint)")
+            continue
+
+        if should_cancel and should_cancel():
+            cancelled = True
+            report(f"Processamento interrompido após {len(processed_labels)} de {len(units)} arquivo(s).")
+            break
+
+        size_kb = len(content) / 1024
+        report(f"Arquivo {index}/{len(units)}: {label} (~{size_kb:.0f} KB)...")
+
+        try:
+            unit_payload = _call_claude_sync(
+                _build_task_create_prompt(),
+                f"Code Diffs to Analyze (1 file):\n\n{_format_unit_diff(filename, label, content)}",
+                selected_model,
+            )
+            _validate_tasks_payload(unit_payload, f"Arquivo {index} ({label})")
+        except Exception as ex:
+            # One bad file must not throw away everything already processed.
+            print(f"[API ERROR] Falha no arquivo {label}: {ex}")
+            failed_labels.append(label)
+            _save_units_checkpoint(output_dir, len(units), processed_labels, failed_labels, unit_tasks)
+            continue
+
+        processed_labels.append(label)
+        unit_tasks.append(unit_payload)
+        _save_units_checkpoint(output_dir, len(units), processed_labels, failed_labels, unit_tasks)
+
+    if not unit_tasks:
+        if cancelled:
+            raise ValueError("Processamento cancelado antes de qualquer arquivo ser processado.")
+        raise ValueError("Nenhum arquivo de diff pôde ser processado pela IA.")
+
+    all_tasks = _flatten_unit_tasks(unit_tasks)
+    if not all_tasks:
+        raise ValueError("A IA não retornou nenhuma tarefa para os diffs analisados.")
+
+    if cancelled:
+        # Merge/reconcile are network calls too, so a cancelled run finishes locally.
+        current_step = total_steps
+        report("Consolidando localmente as tarefas já processadas...")
+        final_payload = _reconcile_hours_locally(all_tasks, total_hours)
+        final_payload["partial"] = True
+        final_payload["cancelled_after_units"] = len(processed_labels)
+        final_payload["total_units"] = len(units)
+        if failed_labels:
+            final_payload["failed_units"] = failed_labels
+        _validate_tasks_payload(final_payload, "Reconciliação local")
+        report(
+            f"Processamento interrompido: {len(processed_labels)} de {len(units)} arquivo(s) "
+            f"consolidados em {len(final_payload['tasks'])} tarefa(s)."
         )
-        _validate_tasks_payload(group_payload, f"Grupo {index} ({label})")
-        group_tasks.append(group_payload)
-        _save_group_checkpoint(output_dir, index, group_tasks, label)
+        return final_payload
 
-    current_step = len(groups) + 1
-    report("Mesclando tarefas de todos os grupos...")
-    all_tasks = _flatten_group_tasks(group_tasks)
+    current_step = len(units) + 1
+    report("Mesclando tarefas de todos os arquivos...")
     compact_merge_input = json.dumps(
         _compact_tasks_for_merge(all_tasks),
         ensure_ascii=False,
@@ -645,7 +744,7 @@ def analyze_diffs_grouped_with_claude(
         _build_merge_tasks_prompt(),
         f"Task summaries to merge ({len(all_tasks)} tasks):\n{compact_merge_input}",
         selected_model,
-        max_tokens_override=4096,
+        max_tokens_override=min(16384, 4096 + len(all_tasks) * 64),
         timeout=120,
     )
     merge_groups = _validate_merge_groups(merge_payload.get("merge_groups", []), len(all_tasks))
@@ -688,5 +787,12 @@ def analyze_diffs_grouped_with_claude(
             "Resultado retornado conforme resposta da API."
         )
 
-    report("Processamento agrupado concluído.")
+    if failed_labels:
+        final_payload["failed_units"] = failed_labels
+        report(
+            f"Processamento concluído com {len(failed_labels)} arquivo(s) com falha: "
+            f"{', '.join(failed_labels)}"
+        )
+    else:
+        report("Processamento concluído.")
     return final_payload

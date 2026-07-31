@@ -25,6 +25,7 @@ class DatePickerField(ft.Row):
             width=width,
             icon=icon,
             read_only=True,  # Prevent manual typing to enforce format
+            on_click=self._open_calendar,
         )
 
         # 3. The invisible button over the TextField (or an icon button next to it)

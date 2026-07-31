@@ -1,26 +1,21 @@
-import os
 import requests
 import datetime
-from dotenv import load_dotenv
 
-# Carrega as variáveis do arquivo .env
-load_dotenv()
+from utils.app_config import get_config
 
 # ==========================================
 # CONFIGURAÇÕES DO GITLAB
 # ==========================================
 GITLAB_BASE_URL = "https://gitlab.ssp.go.gov.br/api/v4"
-GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
-
-# Se deixar vazio [], o script descobre automaticamente todos os projetos editados no dia.
-# Se quiser forçar projetos específicos, coloque os IDs numéricos: [123, 456]
-PROJECT_IDS = []
 
 
 def _get_headers():
-    if not GITLAB_TOKEN:
-        raise ValueError("GITLAB_TOKEN não encontrado no arquivo .env! Verifique suas configurações.")
-    return {"PRIVATE-TOKEN": GITLAB_TOKEN}
+    token = get_config("GITLAB_TOKEN")
+    if not token:
+        raise ValueError(
+            "GITLAB_TOKEN não encontrado no .env nem em ~/ge.txt! Verifique suas configurações."
+        )
+    return {"PRIVATE-TOKEN": token}
 
 
 def _get_gitlab_user_id(username: str) -> int:
@@ -48,50 +43,11 @@ def _get_project_name(project_id: int) -> str:
         return f"Projeto ID {project_id}"
 
 
-def fetch_accessible_projects() -> list:
-    """
-    Lista projetos GitLab acessíveis ao token (membership=true).
-    Retorna [{"id": int, "name": str, "path_with_namespace": str}, ...].
-    """
-    projects_data = []
-    page = 1
-
-    while True:
-        url = f"{GITLAB_BASE_URL}/projects"
-        params = {
-            "membership": "true",
-            "simple": "true",
-            "per_page": 100,
-            "page": page,
-            "order_by": "name",
-            "sort": "asc",
-        }
-        r = requests.get(url, headers=_get_headers(), params=params)
-        r.raise_for_status()
-        projects = r.json()
-
-        if not projects:
-            break
-
-        for project in projects:
-            projects_data.append({
-                "id": project["id"],
-                "name": project.get("name_with_namespace") or project.get("name", f"Projeto ID {project['id']}"),
-                "path_with_namespace": project.get("path_with_namespace", ""),
-            })
-
-        total_pages = int(r.headers.get("X-Total-Pages", 1))
-        if page >= total_pages:
-            break
-        page += 1
-
-    return projects_data
-
-
 def fetch_active_projects(username: str, start_date_str: str, end_date_str: str) -> list:
     """
     Varre os eventos de push do usuário no intervalo selecionado,
     descobre os IDs e busca os nomes reais de cada projeto.
+    Retorna [{"id": int, "name": str}, ...].
     """
     try:
         user_id = _get_gitlab_user_id(username)
@@ -102,24 +58,38 @@ def fetch_active_projects(username: str, start_date_str: str, end_date_str: str)
         after_date = start_date.strftime("%Y-%m-%d")
         before_date = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-        url = f"{GITLAB_BASE_URL}/users/{user_id}/events"
-        params = {
-            "action": "pushed",
-            "after": after_date,
-            "before": before_date,
-            "per_page": 100
-        }
-
-        r = requests.get(url, headers=_get_headers(), params=params)
-        r.raise_for_status()
-        events = r.json()
-
         unique_project_ids = set()
-        for event in events:
-            unique_project_ids.add(event['project_id'])
+        page = 1
+
+        while True:
+            url = f"{GITLAB_BASE_URL}/users/{user_id}/events"
+            params = {
+                "action": "pushed",
+                "after": after_date,
+                "before": before_date,
+                "per_page": 100,
+                "page": page,
+            }
+
+            r = requests.get(url, headers=_get_headers(), params=params)
+            r.raise_for_status()
+            events = r.json()
+
+            if not events:
+                break
+
+            for event in events:
+                project_id = event.get("project_id")
+                if project_id is not None:
+                    unique_project_ids.add(project_id)
+
+            total_pages = int(r.headers.get("X-Total-Pages", 1))
+            if page >= total_pages:
+                break
+            page += 1
 
         projects_data = []
-        for p_id in unique_project_ids:
+        for p_id in sorted(unique_project_ids):
             p_name = _get_project_name(p_id)
             projects_data.append({"id": p_id, "name": p_name})
 

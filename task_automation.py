@@ -43,30 +43,25 @@ def _custom_fields_payload(
     return payload
 
 
-def create_redmine_issue(
-        session,
-        start_date,
-        due_date,
-        username,
-        subtasks_list,
-        *,
-        sistema="SICOR",
-        orgao_solicitante="PM",
-        atribuicao_catalogo="Desenvolvedor Sênior",
-        projeto_vinculado="SICOR",
-        notas="",
-        versao=None,
-):
+def _resolve_logged_in_user_id(username) -> str:
     user_id = LOGIN_TO_USER_ID.get(username, "")
-
-    fixed_version_id = versao or get_dynamic_version()
-
-    # CORREÇÃO 1: Evitar submissão se o ID do usuário for inválido/vazio
     if not user_id:
-        print(f"[{_timestamp()}] [ERRO] O usuário '{username}' não tem um ID mapeado em LOGIN_TO_USER_ID!")
+        print(
+            f"[{_timestamp()}] [ERRO] O login '{username}' não tem ID em LOGIN_TO_USER_ID."
+        )
         print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Atribuído para' é obrigatório no Redmine.")
-        return
+    return user_id
 
+
+def _resolve_desenvolvedor_id(desenvolvedor_id=None) -> str:
+    developer_id = (desenvolvedor_id or "").strip()
+    if not developer_id:
+        print(f"[{_timestamp()}] [ERRO] Nenhum Desenvolvedor selecionado.")
+        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Desenvolvedor' é obrigatório no Redmine.")
+    return developer_id
+
+
+def _month_name_from_date(start_date: str) -> str:
     try:
         data_obj = datetime.datetime.strptime(start_date, "%Y-%m-%d")
         mes_numero = data_obj.month
@@ -78,20 +73,42 @@ def create_redmine_issue(
         5: "MAIO", 6: "JUNHO", 7: "JULHO", 8: "AGOSTO",
         9: "SETEMBRO", 10: "OUTUBRO", 11: "NOVEMBRO", 12: "DEZEMBRO"
     }
-    nome_mes = meses_ptbr.get(mes_numero, "MÊS")
+    return meses_ptbr.get(mes_numero, "MÊS")
 
-    subject_dinamico = f"SICOR - SPRINT {nome_mes}"
+
+def create_parent_sprint_issue(
+        session,
+        start_date,
+        due_date,
+        username,
+        *,
+        sistema="SICOR",
+        orgao_solicitante="PM",
+        atribuicao_catalogo="Desenvolvedor Sênior",
+        projeto_vinculado="SICOR",
+        notas="",
+        versao=None,
+        desenvolvedor_id=None,
+) -> str | None:
+    """Creates only the monthly sprint parent issue. Returns the new issue ID, or None on failure."""
+    assigned_to_id = _resolve_logged_in_user_id(username)
+    if not assigned_to_id:
+        return None
+    developer_id = _resolve_desenvolvedor_id(desenvolvedor_id)
+    if not developer_id:
+        return None
+
+    fixed_version_id = versao or get_dynamic_version()
+    nome_mes = _month_name_from_date(start_date)
+    subject_dinamico = f"{sistema} - SPRINT {nome_mes}"
     description_dinamica = f"tarefas criadas para a sprint de {nome_mes.lower()}"
 
     print(f"\n[{_timestamp()}] ===============================================")
-    print(f"[{_timestamp()}] INICIANDO CRIAÇÃO: {subject_dinamico}")
+    print(f"[{_timestamp()}] CRIANDO TAREFA PAI: {subject_dinamico}")
     print(f"[{_timestamp()}] Versão (fixed_version_id): {fixed_version_id}")
     print(f"[{_timestamp()}] ===============================================")
 
     try:
-        # -------------------------------------------------------------
-        # 1. CRIAR A TAREFA PAI
-        # -------------------------------------------------------------
         parent_token = _get_issue_token(session)
 
         parent_payload = {
@@ -106,13 +123,13 @@ def create_redmine_issue(
             "issue[status_id]": "1",
             "was_default_status": "1",
             "issue[priority_id]": "4",
-            "issue[assigned_to_id]": user_id,
+            "issue[assigned_to_id]": assigned_to_id,
             "issue[fixed_version_id]": fixed_version_id,
             "issue[parent_issue_id]": "",
             "issue[start_date]": start_date,
             "issue[due_date]": due_date,
             "issue[estimated_hours]": "",
-            "issue[custom_field_values][5]": user_id,
+            "issue[custom_field_values][5]": developer_id,
             "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
             "issue[custom_field_values][2]": "JAVA",
             "issue[custom_field_values][4]": "ordem verbal",
@@ -131,110 +148,202 @@ def create_redmine_issue(
         if r_parent.status_code == 200 and "/issues/" in r_parent.url and "new" not in r_parent.url:
             parent_id = r_parent.url.split("?")[0].split("/")[-1]
             print(f"[{_timestamp()}] [OK] TAREFA PAI CRIADA! ID: {parent_id} - URL: {r_parent.url}")
+            return parent_id
+
+        soup_erro = BeautifulSoup(r_parent.text, "html.parser")
+        err_div = soup_erro.find("div", id="errorExplanation")
+        if err_div:
+            texto_erro = err_div.get_text(separator=' | ', strip=True)
+            print(f"[{_timestamp()}] [FALHA] Tarefa Pai recusada pelo Redmine: {texto_erro}")
         else:
-            # CORREÇÃO 2: Extrair e mostrar o erro real da Tarefa Pai
-            soup_erro = BeautifulSoup(r_parent.text, "html.parser")
-            err_div = soup_erro.find("div", id="errorExplanation")
-            if err_div:
-                texto_erro = err_div.get_text(separator=' | ', strip=True)
-                print(f"[{_timestamp()}] [FALHA] Tarefa Pai recusada pelo Redmine: {texto_erro}")
-            else:
-                print(f"[{_timestamp()}] [FALHA] Falha Crítica na Tarefa Pai! HTTP Status: {r_parent.status_code}")
-                print(f"[{_timestamp()}] [HTML BRUTO]: {r_parent.text[:300].strip()}")
-            return
+            print(f"[{_timestamp()}] [FALHA] Falha Crítica na Tarefa Pai! HTTP Status: {r_parent.status_code}")
+            print(f"[{_timestamp()}] [HTML BRUTO]: {r_parent.text[:300].strip()}")
+        return None
 
-        # -------------------------------------------------------------
-        # 2. CRIAR AS SUBTAREFAS A PARTIR DO JSON
-        # -------------------------------------------------------------
-        if subtasks_list:
-            print(f"\n[{_timestamp()}] Encontrado {len(subtasks_list)} subtarefas. Processando...")
+    except PermissionError as pe:
+        print(f"[{_timestamp()}] {pe}")
+        return None
+    except Exception as e:
+        print(f"[{_timestamp()}] ERRO CRÍTICO ao criar tarefa pai: {e}")
+        return None
 
-            for index, subtask in enumerate(subtasks_list):
-                try:
-                    sub_token = _get_issue_token(session)
 
-                    sub_title = subtask.get("task_title") or subtask.get("title", f"Subtarefa {index + 1}")
-                    category = subtask.get("category", "Feature")
-                    base_desc = subtask.get("description", "")
-                    if category and "**Categoria:**" not in base_desc:
-                        sub_desc = (
-                            f"{base_desc}\n\n**Categoria:** {category.capitalize()}"
-                            if base_desc
-                            else f"**Categoria:** {category.capitalize()}"
-                        )
-                    else:
-                        sub_desc = base_desc
-                    sub_start = subtask.get("start_date") or start_date
-                    sub_due = subtask.get("due_date") or due_date
-                    sub_hours = subtask.get("estimated_hours", "")
+def create_subtasks_for_parent(
+        session,
+        parent_id,
+        start_date,
+        due_date,
+        username,
+        subtasks_list,
+        *,
+        sistema="SICOR",
+        orgao_solicitante="PM",
+        atribuicao_catalogo="Desenvolvedor Sênior",
+        projeto_vinculado="SICOR",
+        notas="",
+        versao=None,
+        desenvolvedor_id=None,
+) -> None:
+    """Creates subtasks under an existing parent issue, using the current form field values."""
+    if not parent_id:
+        print(f"[{_timestamp()}] [ERRO] ID da tarefa pai não informado.")
+        return
+    if not subtasks_list:
+        print(f"[{_timestamp()}] [ERRO] Nenhuma subtarefa informada para o pai #{parent_id}.")
+        return
 
-                    sub_payload = {
-                        "utf8": "✓",
-                        "authenticity_token": sub_token,
-                        "form_update_triggered_by": "",
-                        "issue[is_private]": "0",
-                        "issue[project_id]": "16",
-                        "issue[tracker_id]": "8",
-                        "issue[subject]": sub_title,
-                        "issue[description]": sub_desc,
-                        "issue[status_id]": "1",
-                        "was_default_status": "1",
-                        "issue[priority_id]": "2",
-                        "issue[assigned_to_id]": user_id,
-                        "issue[fixed_version_id]": fixed_version_id,
-                        "issue[parent_issue_id]": parent_id,
-                        "issue[start_date]": sub_start,
-                        "issue[due_date]": sub_due,
-                        "issue[estimated_hours]": str(sub_hours),
-                        "issue[custom_field_values][5]": user_id,
-                        "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
-                        "issue[custom_field_values][2]": "JAVA",
-                        "issue[custom_field_values][4]": "ordem verbal",
-                        "issue[custom_field_values][7]": "0",
-                        "issue[custom_field_values][8]": "0",
-                        "issue[watcher_user_ids][]": "",
-                        "commit": "Criar"
-                    }
-                    sub_payload.update(
-                        _custom_fields_payload(
-                            sistema, orgao_solicitante, atribuicao_catalogo, projeto_vinculado, notas
-                        )
+    assigned_to_id = _resolve_logged_in_user_id(username)
+    if not assigned_to_id:
+        return
+    developer_id = _resolve_desenvolvedor_id(desenvolvedor_id)
+    if not developer_id:
+        return
+
+    fixed_version_id = versao or get_dynamic_version()
+    url_post = f"{BASE_URL}/projects/item-01-inovacao/issues"
+
+    print(f"\n[{_timestamp()}] ===============================================")
+    print(f"[{_timestamp()}] ADICIONANDO {len(subtasks_list)} SUBTAREFA(S) AO PAI #{parent_id}")
+    print(f"[{_timestamp()}] Versão (fixed_version_id): {fixed_version_id}")
+    print(f"[{_timestamp()}] ===============================================")
+
+    try:
+        for index, subtask in enumerate(subtasks_list):
+            sub_title = subtask.get("task_title") or subtask.get("title", f"Subtarefa {index + 1}")
+            try:
+                sub_token = _get_issue_token(session)
+
+                category = subtask.get("category", "Feature")
+                base_desc = subtask.get("description", "")
+                if category and "**Categoria:**" not in base_desc:
+                    sub_desc = (
+                        f"{base_desc}\n\n**Categoria:** {category.capitalize()}"
+                        if base_desc
+                        else f"**Categoria:** {category.capitalize()}"
                     )
+                else:
+                    sub_desc = base_desc
+                sub_start = subtask.get("start_date") or start_date
+                sub_due = subtask.get("due_date") or due_date
+                sub_hours = subtask.get("estimated_hours", "")
 
-                    checklists = subtask.get("checklists", [])
-                    for i, chk in enumerate(checklists):
-                        sub_payload[f"issue[checklists_attributes][{i}][is_done]"] = "0"
-                        sub_payload[f"issue[checklists_attributes][{i}][subject]"] = str(chk)
-                        sub_payload[f"issue[checklists_attributes][{i}][_destroy]"] = "false"
-                        sub_payload[f"issue[checklists_attributes][{i}][position]"] = str(i)
-                        sub_payload[f"issue[checklists_attributes][{i}][is_section]"] = "false"
-                        sub_payload[f"issue[checklists_attributes][{i}][id]"] = ""
+                sub_payload = {
+                    "utf8": "✓",
+                    "authenticity_token": sub_token,
+                    "form_update_triggered_by": "",
+                    "issue[is_private]": "0",
+                    "issue[project_id]": "16",
+                    "issue[tracker_id]": "8",
+                    "issue[subject]": sub_title,
+                    "issue[description]": sub_desc,
+                    "issue[status_id]": "1",
+                    "was_default_status": "1",
+                    "issue[priority_id]": "2",
+                    "issue[assigned_to_id]": assigned_to_id,
+                    "issue[fixed_version_id]": fixed_version_id,
+                    "issue[parent_issue_id]": str(parent_id),
+                    "issue[start_date]": sub_start,
+                    "issue[due_date]": sub_due,
+                    "issue[estimated_hours]": str(sub_hours),
+                    "issue[custom_field_values][5]": developer_id,
+                    "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
+                    "issue[custom_field_values][2]": "JAVA",
+                    "issue[custom_field_values][4]": "ordem verbal",
+                    "issue[custom_field_values][7]": "0",
+                    "issue[custom_field_values][8]": "0",
+                    "issue[watcher_user_ids][]": "",
+                    "commit": "Criar"
+                }
+                sub_payload.update(
+                    _custom_fields_payload(
+                        sistema, orgao_solicitante, atribuicao_catalogo, projeto_vinculado, notas
+                    )
+                )
 
-                    r_sub = session.post(url_post, data=sub_payload, allow_redirects=True)
+                checklists = subtask.get("checklists", [])
+                for i, chk in enumerate(checklists):
+                    sub_payload[f"issue[checklists_attributes][{i}][is_done]"] = "0"
+                    sub_payload[f"issue[checklists_attributes][{i}][subject]"] = str(chk)
+                    sub_payload[f"issue[checklists_attributes][{i}][_destroy]"] = "false"
+                    sub_payload[f"issue[checklists_attributes][{i}][position]"] = str(i)
+                    sub_payload[f"issue[checklists_attributes][{i}][is_section]"] = "false"
+                    sub_payload[f"issue[checklists_attributes][{i}][id]"] = ""
 
-                    if r_sub.status_code == 200 and "/issues/" in r_sub.url and "new" not in r_sub.url:
-                        sub_id = r_sub.url.split("?")[0].split("/")[-1]
-                        print(f"[{_timestamp()}]  -> [OK] Subtarefa '{sub_title}' criada! ID: {sub_id} ({sub_hours}h)")
+                r_sub = session.post(url_post, data=sub_payload, allow_redirects=True)
+
+                if r_sub.status_code == 200 and "/issues/" in r_sub.url and "new" not in r_sub.url:
+                    sub_id = r_sub.url.split("?")[0].split("/")[-1]
+                    print(f"[{_timestamp()}]  -> [OK] Subtarefa '{sub_title}' criada! ID: {sub_id} ({sub_hours}h)")
+                else:
+                    soup_sub_erro = BeautifulSoup(r_sub.text, "html.parser")
+                    sub_err_div = soup_sub_erro.find("div", id="errorExplanation")
+                    if sub_err_div:
+                        texto_erro_sub = sub_err_div.get_text(separator=' | ', strip=True)
+                        print(f"[{_timestamp()}]  -> [FALHA] {texto_erro_sub}")
                     else:
-                        # CORREÇÃO 3: Mostrar o erro real das Subtarefas
-                        soup_sub_erro = BeautifulSoup(r_sub.text, "html.parser")
-                        sub_err_div = soup_sub_erro.find("div", id="errorExplanation")
-                        if sub_err_div:
-                            texto_erro_sub = sub_err_div.get_text(separator=' | ', strip=True)
-                            print(f"[{_timestamp()}]  -> [FALHA] {texto_erro_sub}")
-                        else:
-                            print(
-                                f"[{_timestamp()}]  -> [FALHA] HTTP Status: {r_sub.status_code} | HTML: {r_sub.text[:100].strip()}")
+                        print(
+                            f"[{_timestamp()}]  -> [FALHA] HTTP Status: {r_sub.status_code} | HTML: {r_sub.text[:100].strip()}")
 
-                except Exception as ex_sub:
-                    print(f"[{_timestamp()}]  -> [ERRO] Falha interna na subtarefa '{sub_title}': {ex_sub}")
+            except Exception as ex_sub:
+                print(f"[{_timestamp()}]  -> [ERRO] Falha interna na subtarefa '{sub_title}': {ex_sub}")
 
-        print(f"\n[{_timestamp()}] PROCESSO DE SPRINT CONCLUÍDO!")
+        print(f"\n[{_timestamp()}] LOTE DE SUBTAREFAS CONCLUÍDO PARA O PAI #{parent_id}!")
 
     except PermissionError as pe:
         print(f"[{_timestamp()}] {pe}")
     except Exception as e:
-        print(f"[{_timestamp()}] ERRO CRÍTICO no processo principal: {e}")
+        print(f"[{_timestamp()}] ERRO CRÍTICO ao criar subtarefas: {e}")
+
+
+def create_redmine_issue(
+        session,
+        start_date,
+        due_date,
+        username,
+        subtasks_list,
+        *,
+        sistema="SICOR",
+        orgao_solicitante="PM",
+        atribuicao_catalogo="Desenvolvedor Sênior",
+        projeto_vinculado="SICOR",
+        notas="",
+        versao=None,
+        desenvolvedor_id=None,
+) -> str | None:
+    """Creates the sprint parent, then optionally attaches subtasks. Returns parent ID or None."""
+    common = {
+        "sistema": sistema,
+        "orgao_solicitante": orgao_solicitante,
+        "atribuicao_catalogo": atribuicao_catalogo,
+        "projeto_vinculado": projeto_vinculado,
+        "notas": notas,
+        "versao": versao,
+        "desenvolvedor_id": desenvolvedor_id,
+    }
+
+    parent_id = create_parent_sprint_issue(
+        session,
+        start_date,
+        due_date,
+        username,
+        **common,
+    )
+    if not parent_id:
+        return None
+
+    if subtasks_list:
+        create_subtasks_for_parent(
+            session,
+            parent_id,
+            start_date,
+            due_date,
+            username,
+            subtasks_list,
+            **common,
+        )
+
+    print(f"\n[{_timestamp()}] PROCESSO DE SPRINT CONCLUÍDO!")
+    return parent_id
 
 
 def get_redmine_subtasks(session, parent_id):

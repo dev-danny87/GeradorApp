@@ -20,13 +20,105 @@ from layout.tab_evidences_iphan import create_evidences_iphan_tab
 from layout.tab_tasks import create_tasks_tab
 from layout.tab_close_tasks import create_close_tasks_tab
 from layout.tab_diffs import create_diffs_tab
+from layout.tab_ai_analysis import create_ai_analysis_tab
 from services.auth_service import login_redmine, SSP_BASE_URL, PGE_BASE_URL, IPHAN_BASE_URL
 from services.pge_evidence_service import generate_evidences_pge, set_app_run as set_pge_app_run
 from services.iphan.registry import get_service as get_iphan_service
 from services.iphan._common import set_app_run as set_iphan_app_run
 from utils.output_paths import build_ssp_run_dir, month_label_from_date
+from utils.app_config import ensure_ge_txt
 
 VERSION = "evidences-v2.1-2025-09-12"
+
+# Per-button Redmine filter templates. Only closed_on dates vary at runtime.
+_CF10_NOT_IGNORED = {"field": "cf_10", "op": "!", "values": ["0 - Ignorado"]}
+
+SSP_PROJECT_FILTERS = {
+    "gerencia_inovacao_bi": {
+        "slug": "item-02-gerencia-de-inovacao-bi",
+        "sort": "closed_on:desc",
+        "status_ids": ["9", "7", "5"],
+        "cf5_ids": [
+            # ativo
+            "184", "25", "70", "78", "180", "137", "99", "166", "176", "96", "21", "77",
+            # bloqueado
+            "132", "161", "81",
+        ],
+        "extra_filters": [],
+        "columns": ["cf_5", "subject", "total_spent_hours", "cf_12", "cf_23"],
+        "totals": ["estimated_hours", "spent_hours"],
+    },
+    "gerencia_inovacao": {
+        "slug": "item-01-inovacao",
+        "sort": "closed_on",
+        "status_ids": ["9", "7", "5"],
+        "cf5_ids": [
+            # ativo
+            "129", "140", "128", "25", "70", "8", "142", "156", "78", "6", "137", "125",
+            "15", "13", "160", "146", "153", "141", "99", "175", "16", "178", "124", "166",
+            "135", "92", "96", "138", "77", "20", "91", "89",
+            # bloqueado
+            "126", "134", "157", "75", "161", "81",
+        ],
+        "extra_filters": [_CF10_NOT_IGNORED],
+        "columns": ["cf_5", "subject", "total_spent_hours", "cf_10", "cf_22"],
+        "totals": ["spent_hours"],
+    },
+    "gerencia_inteligencia_negocios": {
+        "slug": "gerencia-de-inteligencia-de-negocios-item-02",
+        "sort": "closed_on",
+        "status_ids": ["9", "7", "5"],
+        "cf5_ids": [
+            # ativo
+            "182", "112", "25", "70", "110", "107", "102", "121", "183", "149", "99",
+            "148", "113", "179", "166", "130", "136", "181",
+            # bloqueado
+            "100", "161", "81",
+        ],
+        "extra_filters": [],
+        "columns": ["cf_5", "subject", "total_spent_hours", "cf_13", "cf_24"],
+        "totals": ["spent_hours"],
+    },
+    "gerencia_telecomunicacao": {
+        "slug": "item-02-gerencia-de-negocios",
+        "sort": "updated_on:desc",
+        "status_ids": ["7", "5"],
+        "cf5_ids": [
+            # ativo
+            "25", "70", "103", "5", "116", "152", "97", "99", "98", "133", "166", "176", "122",
+            # bloqueado
+            "115", "75", "151", "72", "161", "81",
+        ],
+        "extra_filters": [],
+        "columns": ["cf_5", "subject", "total_spent_hours", "cf_14", "cf_25"],
+        "totals": ["spent_hours"],
+    },
+    "contrato_hpm": {
+        "slug": "pm-130-2022",
+        "sort": "id:desc",
+        "status_ids": ["9", "7", "5"],
+        "cf5_ids": [],
+        "extra_filters": [],
+        "columns": ["cf_5", "subject", "total_spent_hours", "cf_10", "cf_22"],
+        "totals": ["spent_hours"],
+    },
+    "procon-go": {
+        "slug": "procon-go",
+        "sort": "closed_on",
+        "status_ids": ["9", "7", "5"],
+        "cf5_ids": [
+            # ativo
+            "25", "160", "141", "99", "168", "16", "166", "135",
+            # bloqueado
+            "157", "75", "161", "81",
+        ],
+        "extra_filters": [_CF10_NOT_IGNORED],
+        "columns": ["cf_5", "subject", "total_spent_hours", "cf_10", "cf_22"],
+        "totals": ["spent_hours"],
+    },
+}
+# Alias used by the HPM button exception_type
+SSP_PROJECT_FILTERS["hpm"] = SSP_PROJECT_FILTERS["contrato_hpm"]
 
 
 def _boot_banner():
@@ -37,17 +129,14 @@ def _boot_banner():
 
 
 _boot_banner()
+ensure_ge_txt()
 
 # ==============================
 # Constants and Configuration
 # ==============================
 DEBUG_PARSER = True
 BASE_URL = "https://redmine.ssp.go.gov.br"
-URL_REDINE_ISSUES = f"{BASE_URL}/issues?"
 URL_ISSUE = f"{BASE_URL}/issues"
-
-URL_PDF_GERAL = f"{BASE_URL}/issues.pdf?query_id="
-URL_CSV_GERAL = f"{BASE_URL}/issues.csv?query_id="
 
 EXT_RELATORIO = ".pdf"
 EXT_CSV = ".csv"
@@ -178,18 +267,61 @@ def download_file(session: requests.Session, url: str, dest_path: str, max_retri
 # ==============================
 # Core Logic
 # ==============================
-def build_ssp_closed_on_query(start_date: str, end_date: str) -> str:
+def resolve_ssp_project_config(projeto: str, exception: str) -> dict | None:
+    """Resolve per-button filter config by exception alias or projeto key."""
+    for key in (exception or "", projeto or ""):
+        config = SSP_PROJECT_FILTERS.get(key)
+        if config:
+            return config
+    return None
+
+
+def build_ssp_filter_query(config: dict, start_date: str, end_date: str) -> str:
+    """Build Redmine filter query from project config; only dates vary."""
     params = [
         ("set_filter", "1"),
+        ("sort", config["sort"]),
+        ("f[]", "status_id"),
+        ("op[status_id]", "="),
+    ]
+    for status_id in config["status_ids"]:
+        params.append(("v[status_id][]", status_id))
+
+    params.extend([
         ("f[]", "closed_on"),
         ("op[closed_on]", "><"),
         ("v[closed_on][]", start_date),
         ("v[closed_on][]", end_date),
-    ]
+    ])
+
+    cf5_ids = config.get("cf5_ids") or []
+    if cf5_ids:
+        params.extend([
+            ("f[]", "cf_5"),
+            ("op[cf_5]", "="),
+        ])
+        for cf5_id in cf5_ids:
+            params.append(("v[cf_5][]", str(cf5_id)))
+
+    for extra in config.get("extra_filters") or []:
+        field = extra["field"]
+        params.extend([
+            ("f[]", field),
+            (f"op[{field}]", extra["op"]),
+        ])
+        for value in extra.get("values") or []:
+            params.append((f"v[{field}][]", value))
+
+    params.append(("f[]", ""))
+    for column in config.get("columns") or []:
+        params.append(("c[]", column))
+    params.append(("group_by", "cf_5"))
+    for total in config.get("totals") or []:
+        params.append(("t[]", total))
+    params.append(("t[]", ""))
     return urlencode(params)
 
 
-# ADICIONADO: O argumento `session` foi injetado aqui
 def generate_evidences(
     session,
     strPathRedmineQueryId: str,
@@ -198,24 +330,18 @@ def generate_evidences(
     start_date: str,
     end_date: str,
 ):
-    project_id_map = {
-        "hpm": "pm-130-2022",
-        "procon-go": "procon-go",
-        "geral": "",
-    }
-    project_slug = project_id_map.get(exception, "")
-    has_project = bool(project_slug)
+    config = resolve_ssp_project_config(projeto, exception)
+    if not config:
+        print(
+            f"[{timestamp()}] ERROR: Projeto SSP sem configuração de filtro: "
+            f"projeto={projeto!r} exception={exception!r}"
+        )
+        return
 
-    if has_project:
-        base_list_url = f"{BASE_URL}/projects/{project_slug}/issues?"
-        url_get_issue_list = f"{BASE_URL}/projects/{project_slug}/issues?page=1&query_id="
-        url_pdf_geral = f"{BASE_URL}/projects/{project_slug}/issues.pdf?query_id="
-        url_csv_geral = f"{BASE_URL}/projects/{project_slug}/issues.csv?query_id="
-    else:
-        base_list_url = URL_REDINE_ISSUES
-        url_get_issue_list = f"{BASE_URL}/issues?page=1&query_id="
-        url_pdf_geral = URL_PDF_GERAL
-        url_csv_geral = URL_CSV_GERAL
+    project_slug = config["slug"]
+    base_list_url = f"{BASE_URL}/projects/{project_slug}/issues?"
+    url_pdf_base = f"{BASE_URL}/projects/{project_slug}/issues.pdf?"
+    url_csv_base = f"{BASE_URL}/projects/{project_slug}/issues.csv?"
 
     if not start_date or not end_date:
         print(f"[{timestamp()}] ERROR: Informe as datas inicial e final (closed_on).")
@@ -231,7 +357,9 @@ def generate_evidences(
         print(f"[{timestamp()}] ERROR: Formato de data inválido. Use YYYY-MM-DD.")
         return
 
-    closed_on_suffix = build_ssp_closed_on_query(start_date, end_date)
+    if not session:
+        print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")
+        return
 
     try:
         locale.setlocale(locale.LC_ALL, "pt_BR.UTF-8")
@@ -240,11 +368,22 @@ def generate_evidences(
 
     month_label = month_label_from_date(start_dt)
     base_out_dir = build_ssp_run_dir(projeto, month_label)
+    filter_query = build_ssp_filter_query(config, start_date, end_date)
+    cf5_ids = config.get("cf5_ids") or []
+
+    clear()
+    print(f"\n[{timestamp()}] Preparando para gerar evidências a partir do Redmine...")
+    print(
+        f"Projeto: {project_slug} | closed_on: {start_date} .. {end_date} | "
+        f"Pasta de saída: {base_out_dir}"
+    )
+    if cf5_ids:
+        print(f"[{timestamp()}] Colaboradores cf_5: {', '.join(cf5_ids)}")
+    else:
+        print(f"[{timestamp()}] Sem filtro cf_5 (todos os colaboradores do projeto)")
 
     def get_redmine_page(session: requests.Session, page_num: int):
-        full_url = (
-            f"{base_list_url}page={page_num}&query_id={strPathRedmineQueryId}&{closed_on_suffix}"
-        )
+        full_url = f"{base_list_url}page={page_num}&{filter_query}"
         print(f"[{timestamp()}] Fetching page {page_num}: {full_url}")
         r = http_get(session, full_url)
         soup = BeautifulSoup(r.text, "html.parser")
@@ -262,17 +401,6 @@ def generate_evidences(
             if href: results.append({"href": href, "name": text})
         return results
 
-    clear()
-    print(f"\n[{timestamp()}] Preparando para gerar evidências a partir do Redmine...")
-    print(
-        f"Query ID: {strPathRedmineQueryId} | closed_on: {start_date} .. {end_date} | "
-        f"Pasta de saída: {base_out_dir}"
-    )
-
-    if not session:
-        print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")
-        return
-
     class_name_assigned = "cf_5"
     issues_list = []
     nao_atribuidas = []
@@ -281,6 +409,10 @@ def generate_evidences(
     app_run = True
 
     print(f"\n[{timestamp()}] Buscando informações no Redmine ({BASE_URL})")
+    print(
+        f"[{timestamp()}] Filtros: status={','.join(config['status_ids'])} | "
+        f"closed_on={start_date}..{end_date} | cf_5={len(cf5_ids)} colaboradores"
+    )
 
     page_num = 1
     while app_run:
@@ -370,12 +502,12 @@ def generate_evidences(
                 download_file(session, dl, dest)
 
     print(f"\n[{timestamp()}] Gerando PDF da consulta...")
-    url_pdf_query = f"{url_pdf_geral}{strPathRedmineQueryId}&{closed_on_suffix}"
+    url_pdf_query = f"{url_pdf_base}{filter_query}"
     dest_pdf_query = os.path.join(base_out_dir, RELATORIO_PDF_NOME)
     download_file(session, url_pdf_query, dest_pdf_query)
 
     print(f"\n[{timestamp()}] Gerando CSV (issues) da consulta...")
-    url_csv_query = f"{url_csv_geral}{strPathRedmineQueryId}&{closed_on_suffix}"
+    url_csv_query = f"{url_csv_base}{filter_query}"
     dest_csv_query = os.path.join(base_out_dir, RELATORIO_CSV_NOME)
     download_file(session, url_csv_query, dest_csv_query)
 
@@ -413,7 +545,6 @@ def generate_evidences_iphan(session, project_key, app_state):
     service.generate_evidences(session, app_state)
 
 
-# ADICIONADO: O argumento `session` foi injetado aqui também
 def generate_all_evidences(session, start_date: str, end_date: str):
     global app_run
     app_run = True
@@ -633,9 +764,9 @@ def main(page: ft.Page) -> None:
             elif redmine_host == "iphan" and is_gestor:
                 tabs.tabs = [tab_evidences_iphan]
             elif redmine_host == "ssp" and is_gestor:
-                tabs.tabs = [tab_evidences, tab_tasks, tab_close, tab_diffs]
+                tabs.tabs = [tab_evidences, tab_tasks, tab_close, tab_diffs, tab_ai]
             else:
-                tabs.tabs = [tab_tasks, tab_close, tab_diffs]
+                tabs.tabs = [tab_tasks, tab_close, tab_diffs, tab_ai]
             tabs.selected_index = 0
         else:
             login_container.visible = True
@@ -682,7 +813,9 @@ def main(page: ft.Page) -> None:
 
     tab_tasks = create_tasks_tab(app_state, set_auth, sync_callbacks)
     tab_close = create_close_tasks_tab(page, app_state, set_auth, sync_callbacks)
-    tab_diffs = create_diffs_tab(app_state, set_auth, sync_callbacks)
+    diffs_listeners = []
+    tab_diffs = create_diffs_tab(app_state, set_auth, sync_callbacks, diffs_listeners)
+    tab_ai = create_ai_analysis_tab(app_state, set_auth, sync_callbacks, diffs_listeners)
 
     tabs = ft.Tabs(selected_index=0, animation_duration=300, tabs=[], expand=4)
 

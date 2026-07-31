@@ -12,6 +12,33 @@ from utils.month_selector import (
 )
 
 
+def _build_action_row(left_button, label: str, right_button) -> ft.Container:
+    return ft.Container(
+        width=400,
+        padding=5,
+        border_radius=8,
+        bgcolor=ft.Colors.SURFACE,
+        content=ft.Row(
+            [
+                ft.Container(width=48, height=48, content=left_button, alignment=ft.alignment.center),
+                ft.Container(
+                    expand=True,
+                    alignment=ft.alignment.center,
+                    content=ft.Text(
+                        label,
+                        size=13,
+                        weight=ft.FontWeight.BOLD,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ),
+                ft.Container(width=48, height=48, content=right_button, alignment=ft.alignment.center),
+            ],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+    )
+
+
 def create_evidences_tab(on_generate, on_generate_all, on_stop, get_timestamp, app_state, set_auth, sync_callbacks):
     # ==========================================
     # CORE VIEW: GERADOR DE EVIDÊNCIAS
@@ -103,11 +130,7 @@ def create_evidences_tab(on_generate, on_generate_all, on_stop, get_timestamp, a
             on_click=lambda event: on_stop(),
         )
 
-        text = ft.Text(value=label, expand=True, size=13, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER)
-
-        row = ft.Row([button, text, button_stop], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-
-        return ft.Container(content=row, width=400, padding=5, border_radius=8, bgcolor=ft.Colors.SURFACE)
+        return _build_action_row(button, label, button_stop)
 
     # Lista de Controles
     project_controls = [
@@ -146,21 +169,10 @@ def create_evidences_tab(on_generate, on_generate_all, on_stop, get_timestamp, a
         on_click=lambda event: on_stop(),
     )
 
-    label_all = ft.Text("GERAR TODOS", expand=True, size=13, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER)
-
-    row_all = ft.Container(
-        content=ft.Row(
-            [button_all_generate, label_all, button_stop_all],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        ),
-        width=400,
-        padding=5,
-        border_radius=8,
-        bgcolor=ft.Colors.SURFACE,
-    )
+    row_all = _build_action_row(button_all_generate, "GERAR TODOS", button_stop_all)
 
     date_controls = ft.Container(
-        width=400,
+        width=520,
         content=ft.Column(
             [
                 ft.Row([dropdown_month], alignment=ft.MainAxisAlignment.CENTER),
@@ -187,7 +199,8 @@ def create_evidences_tab(on_generate, on_generate_all, on_stop, get_timestamp, a
         ] + project_controls + [ft.Divider(height=15, color="transparent"), row_all],
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         spacing=10,
-        expand=True
+        expand=True,
+        scroll=ft.ScrollMode.AUTO,
     )
 
     # ==========================================

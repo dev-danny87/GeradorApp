@@ -49,6 +49,7 @@ GeradorApp/
 
 # --- App-generated output ---
 diffs/
+ai_tasks/
 relatorios/
 
 # --- Local scratch / AI exports (repo root) ---
