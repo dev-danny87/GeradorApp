@@ -27,8 +27,10 @@ from services.iphan.registry import get_service as get_iphan_service
 from services.iphan._common import set_app_run as set_iphan_app_run
 from utils.output_paths import build_ssp_run_dir, month_label_from_date
 from utils.app_config import ensure_ge_txt
+from services.update_service import check_for_updates
 
-VERSION = "evidences-v2.1-2025-09-12"
+CURRENT_VERSION = "1.0.0"
+VERSION = CURRENT_VERSION
 
 # Per-button Redmine filter templates. Only closed_on dates vary at runtime.
 _CF10_NOT_IGNORED = {"field": "cf_10", "op": "!", "values": ["0 - Ignorado"]}
@@ -849,6 +851,7 @@ def main(page: ft.Page) -> None:
     app_page.add(login_container, main_app_container)
 
     print(f"[{timestamp()}] Aplicação iniciada com sucesso. Faça o login para continuar.\n")
+    check_for_updates(page, CURRENT_VERSION)
 
 
 if __name__ == "__main__":

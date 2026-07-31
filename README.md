@@ -8,18 +8,42 @@ then activate the venv
 .\.venv\Scripts\activate
 ```
 
-to create the .exe run the build.bat file
-
-
 if you need to recreate venv
-````shell
+```shell
 python -m venv .venv
-````
+```
 
-To create the package use
-````
+## Build standalone .exe
+
+```shell
 flet pack main.py --name "Gerador_Redmine" --icon "icon.ico"
-````
+```
+
+Or build exe + Windows installer (requires [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
+
+```powershell
+winget install JRSoftware.InnoSetup
+.\scripts\build_installer.ps1
+```
+
+Output: `dist\Gerador_Redmine.exe` and `dist_installer\Gerador_Redmine_Setup.exe`.
+
+## Release checklist (GitHub auto-update)
+
+The app checks `https://github.com/dev-danny87/GeradorApp/releases/latest` on startup (`CURRENT_VERSION` in `main.py`). Keep the repo **public** so no GitHub token is required.
+
+1. Bump `CURRENT_VERSION` in `main.py` and `#define MyAppVersion` in `installer/Gerador_Redmine.iss` to the same value (e.g. `1.0.1`).
+2. Commit and push to `master`.
+3. Run `.\scripts\build_installer.ps1` (or `flet pack` + compile the `.iss` with ISCC).
+4. Create a GitHub Release with tag `v1.0.1` (leading `v` is stripped when comparing).
+5. Upload **`Gerador_Redmine_Setup.exe`** as the release asset (exact filename).
+6. Publish the release.
+
+Example with GitHub CLI:
+
+```shell
+gh release create v1.0.0 dist_installer/Gerador_Redmine_Setup.exe --title "v1.0.0" --notes "Installer + auto-update"
+```
 
 ## Config and output files
 
