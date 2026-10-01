@@ -1,10 +1,13 @@
 import flet as ft
 from threading import Thread
 
+from services.iphan._common import options_cache
 from services.iphan.registry import get_default_project_key, get_project_options, get_service
 
 
-def create_evidences_iphan_tab(on_generate, on_stop, get_timestamp, app_state, set_auth, sync_callbacks):
+def create_evidences_iphan_tab(
+    on_generate, on_generate_all, on_stop, get_timestamp, app_state, set_auth, sync_callbacks
+):
     lbl_logged_in = ft.Text("", color="green", weight=ft.FontWeight.BOLD, size=14)
 
     user_header = ft.Row([
@@ -70,31 +73,56 @@ def create_evidences_iphan_tab(on_generate, on_stop, get_timestamp, app_state, s
 
     dropdown_project.on_change = on_project_change
 
-    def handle_generate():
+    def _current_period():
         session = app_state.get("session")
         if not session:
             print(f"[{get_timestamp()}] ERROR: Faça login no IPHAN primeiro.")
-            return
+            return None, None, None
 
         project_key = dropdown_project.value
         if not project_key:
             print(f"[{get_timestamp()}] ERROR: Selecione um projeto.")
-            return
+            return None, None, None
 
         service = get_service(project_key)
         if not service:
             print(f"[{get_timestamp()}] ERROR: Projeto desconhecido: {project_key}")
-            return
+            return None, None, None
 
         ok, message = service.validate_selection(app_state)
         if not ok:
             print(f"[{get_timestamp()}] ERROR: {message}")
+            return None, None, None
+
+        cache = options_cache(app_state, project_key)
+        start_date = cache.get("start_date")
+        end_date = cache.get("end_date")
+        if not start_date or not end_date:
+            print(f"[{get_timestamp()}] ERROR: Informe a data inicial e a data final.")
+            return None, None, None
+
+        return session, start_date, end_date
+
+    def handle_generate():
+        session, _, _ = _current_period()
+        if not session:
             return
 
+        project_key = dropdown_project.value
         try:
             on_generate(session, project_key)
         except Exception as exc:
             print(f"[{get_timestamp()}] ERROR: falha ao gerar evidências IPHAN: {exc}")
+
+    def handle_generate_all():
+        session, start_date, end_date = _current_period()
+        if not session:
+            return
+
+        try:
+            on_generate_all(session, start_date, end_date)
+        except Exception as exc:
+            print(f"[{get_timestamp()}] ERROR: falha ao gerar todos os projetos IPHAN: {exc}")
 
     button_generate = ft.IconButton(
         icon=ft.Icons.ADD_BOX_ROUNDED,
@@ -129,12 +157,46 @@ def create_evidences_iphan_tab(on_generate, on_stop, get_timestamp, app_state, s
         bgcolor=ft.Colors.SURFACE,
     )
 
+    button_all_generate = ft.IconButton(
+        icon=ft.Icons.AUTO_MODE,
+        icon_color="green",
+        tooltip="Gerar todos os projetos no mesmo período",
+        on_click=lambda e: Thread(target=handle_generate_all, daemon=True).start(),
+    )
+
+    button_stop_all = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color="red",
+        tooltip="Parar tudo",
+        on_click=lambda e: on_stop(),
+    )
+
+    label_generate_all = ft.Text(
+        "GERAR TODOS",
+        expand=True,
+        size=13,
+        weight=ft.FontWeight.BOLD,
+        text_align=ft.TextAlign.CENTER,
+    )
+
+    row_generate_all = ft.Container(
+        content=ft.Row(
+            [button_all_generate, label_generate_all, button_stop_all],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        ),
+        width=400,
+        padding=5,
+        border_radius=8,
+        bgcolor=ft.Colors.SURFACE,
+    )
+
     main_column = ft.Column(
         controls=[
             user_header,
             dropdown_project,
             options_container,
             row_generate,
+            row_generate_all,
         ],
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         spacing=10,

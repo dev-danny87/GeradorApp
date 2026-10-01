@@ -1,4 +1,3 @@
-import requests
 from bs4 import BeautifulSoup
 import datetime
 
@@ -6,6 +5,7 @@ from redmine_mappings import LOGIN_TO_USER_ID
 from utils.redmine_version import get_dynamic_version
 
 BASE_URL = "https://redmine.ssp.go.gov.br"
+
 
 def _timestamp() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -24,13 +24,32 @@ def _get_issue_token(session):
     return token_tag.get("value")
 
 
-def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list):
+def create_ai_redmine_tasks(
+        session,
+        start_date,
+        due_date,
+        username,
+        tasks_list,
+        *,
+        sistema="SICOR",
+        orgao_solicitante="PM",
+        atribuicao_catalogo="Desenvolvedor Sênior",
+        projeto_vinculado="SICOR",
+        versao=None,
+        desenvolvedor_id=None,
+):
     user_id = LOGIN_TO_USER_ID.get(username, "")
 
     if not user_id:
         print(f"[{_timestamp()}] [ERRO] O usuário '{username}' não tem um ID mapeado em LOGIN_TO_USER_ID!")
         print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Atribuído para' é obrigatório no Redmine.")
-        return
+        return None
+
+    developer_id = (desenvolvedor_id or "").strip() or user_id
+    if not developer_id:
+        print(f"[{_timestamp()}] [ERRO] Nenhum Desenvolvedor selecionado.")
+        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Desenvolvedor' é obrigatório no Redmine.")
+        return None
 
     try:
         data_obj = datetime.datetime.strptime(start_date, "%Y-%m-%d")
@@ -45,17 +64,19 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
     }
     nome_mes = meses_ptbr.get(mes_numero, "MÊS")
 
-    subject_dinamico = f"SICOR - SPRINT {nome_mes}"
-    description_dinamica = f"Planejamento de tarefas técnicas e detalhamento de implementações para a sprint de {nome_mes.lower()} baseadas nos diffs recentes."
+    subject_dinamico = f"{sistema} - SPRINT {nome_mes}"
+    description_dinamica = (
+        f"Planejamento de tarefas técnicas e detalhamento de implementações "
+        f"para a sprint de {nome_mes.lower()} baseadas nos diffs recentes."
+    )
+    fixed_version_id = versao or get_dynamic_version()
 
     print(f"\n[{_timestamp()}] ===============================================")
     print(f"[{_timestamp()}] INICIANDO CRIAÇÃO DE TAREFAS: {subject_dinamico}")
+    print(f"[{_timestamp()}] Versão (fixed_version_id): {fixed_version_id}")
     print(f"[{_timestamp()}] ===============================================")
 
     try:
-        dynamic_parent_versao = get_dynamic_version()
-        dynamic_sub_versao = get_dynamic_version()
-
         # 1. CRIAR TAREFA PAI
         parent_token = _get_issue_token(session)
 
@@ -72,21 +93,21 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
             "was_default_status": "1",
             "issue[priority_id]": "4",
             "issue[assigned_to_id]": user_id,
-            "issue[fixed_version_id]": dynamic_parent_versao,
+            "issue[fixed_version_id]": fixed_version_id,
             "issue[parent_issue_id]": "",
             "issue[start_date]": start_date,
             "issue[due_date]": due_date,
             "issue[estimated_hours]": "",
-            "issue[custom_field_values][5]": user_id,
+            "issue[custom_field_values][5]": developer_id,
             "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
             "issue[custom_field_values][2]": "JAVA",
-            "issue[custom_field_values][6]": "SICOR",
-            "issue[custom_field_values][3]": "PM",
+            "issue[custom_field_values][6]": sistema,
+            "issue[custom_field_values][3]": orgao_solicitante,
             "issue[custom_field_values][4]": "ordem verbal",
             "issue[custom_field_values][7]": "0",
             "issue[custom_field_values][8]": "0",
-            "issue[custom_field_values][22]": "Desenvolvedor Sênior",
-            "issue[custom_field_values][27]": "SICOR",
+            "issue[custom_field_values][22]": atribuicao_catalogo,
+            "issue[custom_field_values][27]": projeto_vinculado,
             "issue[watcher_user_ids][]": "",
             "commit": "Criar"
         }
@@ -105,19 +126,19 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
                 print(f"[{_timestamp()}] [FALHA] Tarefa Pai recusada pelo Redmine: {texto_erro}")
             else:
                 print(f"[{_timestamp()}] [FALHA] Falha Crítica na Tarefa Pai! HTTP Status: {r_parent.status_code}")
-                # Imprime os primeiros 300 caracteres para te dar uma dica do erro real (ex: permissão negada)
                 print(f"[{_timestamp()}] [HTML BRUTO]: {r_parent.text[:300].strip()}")
-            return
+            return None
+
+        created_subtasks: list[dict] = []
 
         # 2. CRIAR SUBTAREFAS
         if tasks_list:
             print(f"\n[{_timestamp()}] Processando {len(tasks_list)} subtarefas...")
 
             for index, subtask in enumerate(tasks_list):
+                sub_title = subtask.get("task_title", f"Subtarefa {index + 1}")
                 try:
                     sub_token = _get_issue_token(session)
-
-                    sub_title = subtask.get("task_title", f"Subtarefa {index + 1}")
                     category = subtask.get("category", "Feature")
                     base_desc = subtask.get("description", "Sem descrição detalhada.")
 
@@ -137,21 +158,21 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
                         "was_default_status": "1",
                         "issue[priority_id]": "2",
                         "issue[assigned_to_id]": user_id,
-                        "issue[fixed_version_id]": dynamic_sub_versao,
+                        "issue[fixed_version_id]": fixed_version_id,
                         "issue[parent_issue_id]": parent_id,
                         "issue[start_date]": start_date,
                         "issue[due_date]": due_date,
                         "issue[estimated_hours]": str(sub_hours),
-                        "issue[custom_field_values][5]": user_id,
+                        "issue[custom_field_values][5]": developer_id,
                         "issue[custom_field_values][10]": "12 - Implementação de Nova Funcionalidade do Tipo Interface de Usuário (backend e frontend)",
                         "issue[custom_field_values][2]": "JAVA",
-                        "issue[custom_field_values][6]": "SICOR",
-                        "issue[custom_field_values][3]": "PM",
+                        "issue[custom_field_values][6]": sistema,
+                        "issue[custom_field_values][3]": orgao_solicitante,
                         "issue[custom_field_values][4]": "ordem verbal",
                         "issue[custom_field_values][7]": "0",
                         "issue[custom_field_values][8]": "0",
-                        "issue[custom_field_values][22]": "Desenvolvedor Sênior",
-                        "issue[custom_field_values][27]": "SICOR",
+                        "issue[custom_field_values][22]": atribuicao_catalogo,
+                        "issue[custom_field_values][27]": projeto_vinculado,
                         "issue[watcher_user_ids][]": "",
                         "commit": "Criar"
                     }
@@ -170,6 +191,12 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
                     if r_sub.status_code == 200 and "/issues/" in r_sub.url and "new" not in r_sub.url:
                         sub_id = r_sub.url.split("?")[0].split("/")[-1]
                         print(f"[{_timestamp()}]  -> [OK] Subtarefa '{sub_title}' criada! ID: {sub_id} ({sub_hours}h)")
+                        created_subtasks.append({
+                            "id": sub_id,
+                            "title": sub_title,
+                            "estimated_hours": sub_hours,
+                            "commit_links": subtask.get("commit_links") or [],
+                        })
                     else:
                         soup_sub_erro = BeautifulSoup(r_sub.text, "html.parser")
                         sub_err_div = soup_sub_erro.find("div", id="errorExplanation")
@@ -183,8 +210,11 @@ def create_ai_redmine_tasks(session, start_date, due_date, username, tasks_list)
                     print(f"[{_timestamp()}]  -> [ERRO] Falha interna na subtarefa '{sub_title}': {ex_sub}")
 
         print(f"\n[{_timestamp()}] PROCESSO DE SPRINT CONCLUÍDO!")
+        return {"parent_id": parent_id, "subtasks": created_subtasks}
 
     except PermissionError as pe:
         print(f"[{_timestamp()}] {pe}")
+        return None
     except Exception as e:
         print(f"[{_timestamp()}] ERRO CRÍTICO: {e}")
+        return None

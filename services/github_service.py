@@ -191,7 +191,10 @@ def extract_repos_diff_for_day(author: str, target_date_str: str, repo_full_name
             for commit in commits:
                 commit_sha = commit["sha"]
                 commit_msg = commit["commit"]["message"].split("\n")[0]
+                commit_url = commit.get("html_url") or ""
 
+                if commit_url:
+                    combined_diff += f"COMMIT_URL: {commit_url}\n"
                 combined_diff += f"[{commit_sha[:8]}] {commit_msg}\n"
                 combined_diff += "-" * 50 + "\n"
 

@@ -24,23 +24,8 @@ from redmine_mappings import (
     PROJECT_FILTER_OPTIONS,
     ROLE_OPTIONS,
     USER_OPTIONS,
-    LOGIN_TO_USER_ID,
 )
-
-_DEFAULT_SISTEMA = "SICOR"
-_DEFAULT_ORGAO = "PM"
-_DEFAULT_ATRIBUICAO = "Desenvolvedor Sênior"
-_DEFAULT_PROJETO = "SICOR"
-_VALID_USER_IDS = set(USER_OPTIONS.values())
-
-
-def _default_desenvolvedor_id(username: str | None) -> str | None:
-    if not username:
-        return None
-    user_id = LOGIN_TO_USER_ID.get(username)
-    if user_id and user_id in _VALID_USER_IDS:
-        return user_id
-    return None
+from utils.redmine_task_defaults import redmine_task_defaults
 
 
 def _parse_tasks_json(json_text: str) -> list:
@@ -118,15 +103,20 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         hint_text="Faça login para carregar as versões abertas",
     )
 
-    dropdown_sistema = _dropdown_from_mapping("Sistema", SYSTEM_OPTIONS, _DEFAULT_SISTEMA)
-    dropdown_orgao = _dropdown_from_mapping("Órgão solicitante", ORGAN_OPTIONS, _DEFAULT_ORGAO)
-    dropdown_atribuicao = _dropdown_from_mapping("Atribuição Catálogo", ROLE_OPTIONS, _DEFAULT_ATRIBUICAO)
-    dropdown_projeto = _dropdown_from_mapping("Projeto Vinculado", PROJECT_FILTER_OPTIONS, _DEFAULT_PROJETO)
+    defaults = redmine_task_defaults(app_state.get("user"))
+    dropdown_sistema = _dropdown_from_mapping("Sistema", SYSTEM_OPTIONS, defaults["sistema"])
+    dropdown_orgao = _dropdown_from_mapping("Órgão solicitante", ORGAN_OPTIONS, defaults["orgao"])
+    dropdown_atribuicao = _dropdown_from_mapping(
+        "Atribuição Catálogo", ROLE_OPTIONS, defaults["atribuicao"]
+    )
+    dropdown_projeto = _dropdown_from_mapping(
+        "Projeto Vinculado", PROJECT_FILTER_OPTIONS, defaults["projeto"]
+    )
     dropdown_desenvolvedor = ft.Dropdown(
         label="Desenvolvedor",
         width=350,
         options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
-        value=None,
+        value=defaults.get("desenvolvedor_id"),
     )
 
     txt_notas = ft.TextField(
@@ -192,14 +182,15 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
     ], alignment=ft.MainAxisAlignment.END)
 
     def _reset_field_defaults():
+        current_defaults = redmine_task_defaults(app_state.get("user"))
         agora = datetime.datetime.now().date()
         inicio, fim = month_bounds(agora)
         dropdown_month.value = current_month_key(agora)
-        dropdown_sistema.value = _DEFAULT_SISTEMA
-        dropdown_orgao.value = _DEFAULT_ORGAO
-        dropdown_atribuicao.value = _DEFAULT_ATRIBUICAO
-        dropdown_projeto.value = _DEFAULT_PROJETO
-        dropdown_desenvolvedor.value = _default_desenvolvedor_id(app_state.get("user"))
+        dropdown_sistema.value = current_defaults["sistema"]
+        dropdown_orgao.value = current_defaults["orgao"]
+        dropdown_atribuicao.value = current_defaults["atribuicao"]
+        dropdown_projeto.value = current_defaults["projeto"]
+        dropdown_desenvolvedor.value = current_defaults.get("desenvolvedor_id")
         txt_notas.value = ""
         txt_parent_id.value = ""
         dropdown_versao.options = []
@@ -281,9 +272,9 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         # Atualiza o nome do usuário assim que o login for confirmado no main.py
         if app_state["session"]:
             lbl_logged_in.value = app_state["user"]
-            mapped_id = _default_desenvolvedor_id(app_state["user"])
-            if mapped_id and not dropdown_desenvolvedor.value:
-                dropdown_desenvolvedor.value = mapped_id
+            current_defaults = redmine_task_defaults(app_state["user"])
+            if not dropdown_desenvolvedor.value and current_defaults.get("desenvolvedor_id"):
+                dropdown_desenvolvedor.value = current_defaults["desenvolvedor_id"]
             Thread(target=_load_open_versions, daemon=True).start()
         else:
             # Limpa o formulário caso o usuário faça logout

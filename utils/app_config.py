@@ -36,7 +36,24 @@ GE_TXT_DEFAULTS = [
     "GITLAB_DEFAULT_AUTHOR",
     "GITHUB_DEFAULT_AUTHOR",
     "DIFF_DEFAULT_PLATFORM",
+    "RD_DEFAULT_SISTEMA",
+    "RD_DEFAULT_ORGAO",
+    "RD_DEFAULT_ATRIBUICAO",
+    "RD_DEFAULT_PROJETO",
+    "RD_DEFAULT_DESENVOLVEDOR",
+    "RD_MIN_TASK_HOURS",
 ]
+
+# Defaults applied only when creating a new ge.txt (never overwrite existing).
+GE_TXT_DEFAULT_VALUES = {
+    "THREADS": "1",
+    "RD_DEFAULT_SISTEMA": "SICOR",
+    "RD_DEFAULT_ORGAO": "PM",
+    "RD_DEFAULT_ATRIBUICAO": "Desenvolvedor Sênior",
+    "RD_DEFAULT_PROJETO": "SICOR",
+    "RD_DEFAULT_DESENVOLVEDOR": "",
+    "RD_MIN_TASK_HOURS": "8",
+}
 
 
 def ge_txt_path() -> Path:
@@ -53,7 +70,10 @@ def ensure_ge_txt() -> Path:
         "# GeradorApp config — fill values as needed",
         f"# {path}",
         "",
-        *[f"{key}=" for key in GE_TXT_DEFAULTS],
+        *[
+            f"{key}={GE_TXT_DEFAULT_VALUES.get(key, '')}"
+            for key in GE_TXT_DEFAULTS
+        ],
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -94,6 +114,54 @@ def reload_config() -> None:
     """Clear cached ge.txt values (useful after editing the file)."""
     _load_ge_txt.cache_clear()
     load_dotenv(override=True)
+
+
+def load_ge_txt_values() -> dict[str, str]:
+    """Return parsed ~/ge.txt values (cache cleared so disk is re-read)."""
+    ensure_ge_txt()
+    _load_ge_txt.cache_clear()
+    return dict(_load_ge_txt())
+
+
+def save_ge_txt(values: dict[str, str]) -> Path:
+    """
+    Rewrite ~/ge.txt with known keys in GE_TXT_DEFAULTS order.
+    Reloads cache and copies non-empty values into os.environ.
+    """
+    path = ensure_ge_txt()
+    lines = [
+        "# GeradorApp config — fill values as needed",
+        f"# {path}",
+        "",
+    ]
+    for key in GE_TXT_DEFAULTS:
+        raw = values.get(key, "")
+        value = "" if raw is None else str(raw).strip()
+        lines.append(f"{key}={value}")
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+    reload_config()
+    env_wins = set(keys_overridden_by_env())
+    for key in GE_TXT_DEFAULTS:
+        value = str(values.get(key, "") or "").strip()
+        if value and key not in env_wins:
+            os.environ[key] = value
+
+    return path
+
+
+def keys_overridden_by_env() -> list[str]:
+    """Keys with a non-empty value in the project .env (those win over ge.txt)."""
+    env_path = Path.cwd() / ".env"
+    if not env_path.is_file():
+        return []
+    file_values = _parse_kv_file(env_path)
+    return [
+        key
+        for key in GE_TXT_DEFAULTS
+        if (file_values.get(key) or "").strip()
+    ]
 
 
 def get_config(key: str, default: str = "") -> str:

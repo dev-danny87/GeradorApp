@@ -380,9 +380,155 @@ def get_redmine_subtasks(session, parent_id):
         return []
 
 
-def close_single_subtask(session, sub_id, files_list, notas=""):
+def _upload_files_to_redmine(session, csrf_token_val, files_list) -> list[dict]:
     import urllib.parse
     import mimetypes
+    import re
+
+    uploaded_tokens: list[dict] = []
+    for index, file_info in enumerate(files_list, start=1):
+        file_path = file_info["path"]
+        file_name = file_info["name"]
+
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = mime_type or "application/octet-stream"
+
+        encoded_name = urllib.parse.quote(file_name)
+        encoded_mime = urllib.parse.quote(mime_type)
+
+        with open(file_path, "rb") as f:
+            file_data = f.read()
+
+        upload_url = (
+            f"{BASE_URL}/uploads.js?attachment_id={index}"
+            f"&filename={encoded_name}&content_type={encoded_mime}"
+        )
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Accept": "*/*",
+            "X-CSRF-Token": csrf_token_val,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        r_up = session.post(upload_url, data=file_data, headers=headers)
+
+        if r_up.status_code == 200:
+            match = re.search(r"val\(['\"]([a-zA-Z0-9\.\-_]+)['\"]\)", r_up.text)
+            if match:
+                uploaded_tokens.append({"name": file_name, "token": match.group(1)})
+                print(f"[{_timestamp()}] Upload efetuado: {file_name}")
+
+    return uploaded_tokens
+
+
+def _collect_issue_form_fields(form, ignorar_nomes: list[str]) -> list[tuple[str, str]]:
+    payload_list: list[tuple[str, str]] = []
+    for elem in form.find_all(["input", "select", "textarea"]):
+        name = elem.get("name")
+        if not name or name in ignorar_nomes or "checklists_attributes" in name:
+            continue
+
+        elem_type = elem.get("type", "").lower() if elem.name == "input" else ""
+        if elem_type in ["submit", "button", "file", "image"]:
+            continue
+        if elem_type in ["checkbox", "radio"] and not elem.has_attr("checked"):
+            continue
+
+        val = ""
+        if elem.name == "textarea":
+            val = elem.text
+        elif elem.name == "select":
+            selected = elem.find("option", selected=True)
+            val = selected.get("value", "") if selected else (
+                elem.find("option").get("value", "") if elem.find("option") else "")
+        else:
+            val = elem.get("value", "")
+
+        payload_list.append((name, val))
+    return payload_list
+
+
+def attach_files_to_issue(session, issue_id, files_list, notas="") -> bool:
+    """Attach files to an issue without changing status or logging time."""
+    import re
+
+    if not files_list:
+        return True
+
+    print(f"\n[{_timestamp()}] Anexando {len(files_list)} arquivo(s) à tarefa #{issue_id}...")
+
+    try:
+        url_issue = f"{BASE_URL}/issues/{issue_id}"
+        r_issue = session.get(url_issue, timeout=60)
+        r_issue.raise_for_status()
+        soup_issue = BeautifulSoup(r_issue.text, "html.parser")
+
+        csrf_meta = soup_issue.find("meta", attrs={"name": "csrf-token"})
+        if not csrf_meta:
+            print(f"[{_timestamp()}] ERRO CRÍTICO: Token CSRF não localizado.")
+            return False
+        csrf_token_val = csrf_meta.get("content")
+
+        lock_input = soup_issue.find("input", attrs={"name": "issue[lock_version]"})
+        lock_version_val = lock_input.get("value") if lock_input else "0"
+
+        form = soup_issue.find("form", id="issue-form")
+        if not form:
+            print(f"[{_timestamp()}] ERRO: Formulário da tarefa #{issue_id} não encontrado.")
+            return False
+
+        uploaded_tokens = _upload_files_to_redmine(session, csrf_token_val, files_list)
+        if not uploaded_tokens:
+            print(f"[{_timestamp()}] [FALHA] Nenhum arquivo pôde ser enviado para #{issue_id}.")
+            return False
+
+        ignorar_nomes = [
+            "utf8", "_method", "authenticity_token", "form_update_triggered_by",
+            "issue[status_id]", "time_entry[hours]", "time_entry[activity_id]",
+            "commit", "issue[lock_version]", "time_entry[comments]", "issue[notes]",
+        ]
+        payload_list = _collect_issue_form_fields(form, ignorar_nomes)
+        payload_list.extend([
+            ("utf8", "✓"),
+            ("_method", "patch"),
+            ("authenticity_token", csrf_token_val),
+            ("form_update_triggered_by", ""),
+            ("issue[lock_version]", lock_version_val),
+        ])
+
+        for i, token_data in enumerate(uploaded_tokens, start=1):
+            payload_list.extend([
+                (f"attachments[{i}][filename]", token_data["name"]),
+                (f"attachments[{i}][description]", ""),
+                (f"attachments[{i}][token]", token_data["token"]),
+            ])
+
+        payload_list.append(("attachments[dummy][file]", ""))
+        if notas.strip():
+            payload_list.append(("issue[notes]", notas.strip()))
+        payload_list.append(("commit", "Enviar"))
+
+        update_url = f"{BASE_URL}/issues/{issue_id}"
+        r_update = session.post(update_url, data=payload_list, allow_redirects=True)
+
+        if r_update.history:
+            print(f"[{_timestamp()}] -> [OK] {len(uploaded_tokens)} arquivo(s) anexado(s) à tarefa #{issue_id}.")
+            return True
+
+        soup_erro = BeautifulSoup(r_update.text, "html.parser")
+        err_div = soup_erro.find("div", id="errorExplanation")
+        if err_div:
+            texto_erro = err_div.get_text(separator=' | ', strip=True)
+            print(f"[{_timestamp()}] -> [FALHA DE VALIDAÇÃO]: {texto_erro}")
+        else:
+            print(f"[{_timestamp()}] -> [FALHA] Anexo recusado silenciosamente pelo servidor.")
+        return False
+
+    except Exception as e:
+        print(f"[{_timestamp()}] ERRO CRÍTICO ao anexar arquivos: {e}")
+        return False
+
+
+def close_single_subtask(session, sub_id, files_list, notas=""):
     import re
 
     print(f"\n[{_timestamp()}] ===============================================")
@@ -402,37 +548,21 @@ def close_single_subtask(session, sub_id, files_list, notas=""):
         lock_input = soup_sub.find("input", attrs={"name": "issue[lock_version]"})
         lock_version_val = lock_input.get("value") if lock_input else "0"
 
-        uploaded_tokens = []
-        if files_list:
-            for index, file_info in enumerate(files_list, start=1):
-                file_path = file_info["path"]
-                file_name = file_info["name"]
-
-                mime_type, _ = mimetypes.guess_type(file_path)
-                mime_type = mime_type or "application/octet-stream"
-
-                encoded_name = urllib.parse.quote(file_name)
-                encoded_mime = urllib.parse.quote(mime_type)
-
-                with open(file_path, "rb") as f:
-                    file_data = f.read()
-
-                upload_url = f"{BASE_URL}/uploads.js?attachment_id={index}&filename={encoded_name}&content_type={encoded_mime}"
-                headers = {
-                    "Content-Type": "application/octet-stream",
-                    "Accept": "*/*",
-                    "X-CSRF-Token": csrf_token_val,
-                    "X-Requested-With": "XMLHttpRequest"
-                }
-                r_up = session.post(upload_url, data=file_data, headers=headers)
-
-                if r_up.status_code == 200:
-                    match = re.search(r"val\(['\"]([a-zA-Z0-9\.\-_]+)['\"]\)", r_up.text)
-                    if match:
-                        uploaded_tokens.append({"name": file_name, "token": match.group(1)})
-                        print(f"[{_timestamp()}] Upload efetuado: {file_name}")
+        uploaded_tokens = _upload_files_to_redmine(session, csrf_token_val, files_list) if files_list else []
 
         form = soup_sub.find("form", id="issue-form")
+        if not form:
+            print(
+                f"[{_timestamp()}] ERRO CRÍTICO: formulário #issue-form não encontrado "
+                f"na subtarefa #{sub_id}."
+            )
+            print(
+                f"[{_timestamp()}] URL final: {r_sub.url} | HTTP {r_sub.status_code}. "
+                "Possíveis causas: sessão expirada, sem permissão de edição, "
+                "ou tarefa já fechada."
+            )
+            return
+
         payload_list = []
 
         ignorar_nomes = [
@@ -441,28 +571,7 @@ def close_single_subtask(session, sub_id, files_list, notas=""):
             "commit", "issue[lock_version]", "time_entry[comments]", "issue[notes]",
         ]
 
-        for elem in form.find_all(["input", "select", "textarea"]):
-            name = elem.get("name")
-            if not name or name in ignorar_nomes or "checklists_attributes" in name:
-                continue
-
-            elem_type = elem.get("type", "").lower() if elem.name == "input" else ""
-            if elem_type in ["submit", "button", "file", "image"]:
-                continue
-            if elem_type in ["checkbox", "radio"] and not elem.has_attr("checked"):
-                continue
-
-            val = ""
-            if elem.name == "textarea":
-                val = elem.text
-            elif elem.name == "select":
-                selected = elem.find("option", selected=True)
-                val = selected.get("value", "") if selected else (
-                    elem.find("option").get("value", "") if elem.find("option") else "")
-            else:
-                val = elem.get("value", "")
-
-            payload_list.append((name, val))
+        payload_list.extend(_collect_issue_form_fields(form, ignorar_nomes))
 
         est_hours_val = "0"
         est_div = soup_sub.select_one(".estimated-hours .value")

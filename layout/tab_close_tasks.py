@@ -5,6 +5,15 @@ import os
 from threading import Thread
 
 from task_automation import get_redmine_subtasks, close_single_subtask
+from services.ai_api_request import MODEL_CONFIGS, synthesize_tasks_for_redmine
+from utils.ai_tasks_store import list_saved_fechamentos, list_saved_results, load_fechamento
+from utils.fechamento_builder import (
+    SOURCE_ANALYSIS,
+    SOURCE_CHECKPOINT,
+    list_diff_folders_with_checkpoint,
+    regenerate_fechamento,
+    resolve_analysis_path,
+)
 
 
 def _parse_close_json(json_text: str) -> list:
@@ -38,7 +47,7 @@ def _parse_close_json(json_text: str) -> list:
     return normalized
 
 
-def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
+def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, fechamento_listeners=None):
     selected_files = []
     cached_subtasks: list[dict] = []
 
@@ -151,15 +160,88 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
         max_lines=12,
         icon=ft.Icons.DATA_OBJECT,
     )
-    json_container = ft.Container(content=txt_close_json, width=600, height=220, visible=False)
+    json_container = ft.Container(content=txt_close_json, width=600, height=220)
+
+    dropdown_fechamento = ft.Dropdown(
+        label="Arquivo de Fechamento",
+        width=600,
+        hint_text="Selecione um fechamento salvo em ./diffs (ou ./ai_tasks legado)",
+    )
+
+    dropdown_analysis = ft.Dropdown(
+        label="Análise IA (base para regenerar notas)",
+        width=600,
+        hint_text="Selecione a análise salva em ./ai_tasks",
+    )
+
+    dropdown_checkpoint_folder = ft.Dropdown(
+        label="Pasta de Diffs (checkpoint)",
+        width=600,
+        hint_text="Pastas em ./diffs com ai_tasks_checkpoint.json",
+        visible=False,
+    )
+
+    radio_source = ft.RadioGroup(
+        content=ft.Row(
+            [
+                ft.Radio(value=SOURCE_ANALYSIS, label="Análise salva"),
+                ft.Radio(value=SOURCE_CHECKPOINT, label="Checkpoint da pasta de diffs"),
+            ],
+            wrap=True,
+        ),
+        value=SOURCE_ANALYSIS,
+    )
+
+    chk_tasks_only = ft.Checkbox(
+        label="Usar somente tarefas (ignorar re-leitura de diffs)",
+        value=False,
+        tooltip=(
+            "Monta as notas só com título/descrição/arquivos/commit_links já presentes "
+            "na análise ou no checkpoint, sem reprocessar os .txt de diffs."
+        ),
+    )
+
+    btn_regenerate_fechamento = ft.ElevatedButton(
+        "Regenerar Fechamento",
+        icon=ft.Icons.AUTORENEW,
+        color="white",
+        bgcolor="purple",
+        tooltip=(
+            "Gera notas detalhadas com commits a partir da análise/checkpoint, "
+            "usando os IDs do fechamento selecionado (ou das subtarefas buscadas)"
+        ),
+    )
 
     btn_close_json = ft.ElevatedButton(
         "Fechar via JSON",
         icon=ft.Icons.PLAYLIST_ADD_CHECK,
         color="white",
         bgcolor="green",
-        visible=False,
         tooltip="Fecha cada subtarefa do JSON com suas notas e arquivos",
+    )
+
+    lote_section = ft.Column(
+        [
+            ft.Text(
+                "Fechar em lote via arquivo de fechamento ou JSON manual:",
+                weight=ft.FontWeight.BOLD,
+            ),
+            dropdown_fechamento,
+            ft.Text("Fonte das notas:", weight=ft.FontWeight.W_500),
+            radio_source,
+            dropdown_analysis,
+            dropdown_checkpoint_folder,
+            chk_tasks_only,
+            ft.Row(
+                [btn_regenerate_fechamento],
+                alignment=ft.MainAxisAlignment.START,
+                width=600,
+            ),
+            json_container,
+            ft.Row([btn_close_json], alignment=ft.MainAxisAlignment.END, width=600),
+        ],
+        spacing=10,
+        visible=False,
     )
 
     user_header = ft.Row([
@@ -191,7 +273,8 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
         [
             user_header,
             ft.Text(
-                "1. Digite a Sprint Pai. 2. Busque as subtarefas. 3. Feche uma (dropdown) ou várias (JSON).",
+                "1. Digite a Sprint Pai e busque subtarefas para fechar uma a uma, "
+                "ou use o arquivo de fechamento abaixo para lote.",
                 weight=ft.FontWeight.BOLD,
             ),
             ft.Row([txt_parent_id, btn_search, search_progress], alignment=ft.MainAxisAlignment.CENTER),
@@ -207,8 +290,7 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
             txt_notas,
             ft.Row([btn_close_task], alignment=ft.MainAxisAlignment.END, width=600),
             ft.Divider(height=20),
-            json_container,
-            ft.Row([btn_close_json], alignment=ft.MainAxisAlignment.END, width=600),
+            lote_section,
             lbl_form_error,
         ],
         alignment=ft.MainAxisAlignment.START,
@@ -224,15 +306,99 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
         lbl_form_error.visible = True
         page.update()
 
-    def _set_batch_ui_visible(visible: bool):
+    def _set_single_close_ui_visible(visible: bool):
         dropdown_subtasks.visible = visible
         upload_container.visible = visible
         txt_notas.visible = visible
         btn_close_task.visible = visible
         btn_copy_ids.visible = visible
         btn_fill_json_template.visible = visible
-        json_container.visible = visible
-        btn_close_json.visible = visible
+
+    def _set_lote_ui_visible(visible: bool):
+        lote_section.visible = visible
+
+    def refresh_fechamento_dropdown(select_path: str | None = None):
+        entries = list_saved_fechamentos()
+        dropdown_fechamento.options.clear()
+        for entry in entries:
+            dropdown_fechamento.options.append(
+                ft.dropdown.Option(key=entry["path"], text=entry["label"])
+            )
+
+        if entries:
+            if select_path and any(entry["path"] == select_path for entry in entries):
+                dropdown_fechamento.value = select_path
+            elif dropdown_fechamento.value not in [entry["path"] for entry in entries]:
+                dropdown_fechamento.value = entries[0]["path"]
+        else:
+            dropdown_fechamento.value = None
+
+    def refresh_analysis_dropdown(select_path: str | None = None):
+        entries = list_saved_results()
+        dropdown_analysis.options.clear()
+        for entry in entries:
+            dropdown_analysis.options.append(
+                ft.dropdown.Option(key=entry["path"], text=entry["label"])
+            )
+
+        if entries:
+            if select_path and any(entry["path"] == select_path for entry in entries):
+                dropdown_analysis.value = select_path
+            elif dropdown_analysis.value not in [entry["path"] for entry in entries]:
+                dropdown_analysis.value = entries[0]["path"]
+        else:
+            dropdown_analysis.value = None
+
+    def refresh_checkpoint_dropdown(select_folder: str | None = None):
+        entries = list_diff_folders_with_checkpoint()
+        dropdown_checkpoint_folder.options.clear()
+        for entry in entries:
+            dropdown_checkpoint_folder.options.append(
+                ft.dropdown.Option(key=entry["folder"], text=entry["label"])
+            )
+
+        if entries:
+            if select_folder and any(entry["folder"] == select_folder for entry in entries):
+                dropdown_checkpoint_folder.value = select_folder
+            elif dropdown_checkpoint_folder.value not in [entry["folder"] for entry in entries]:
+                dropdown_checkpoint_folder.value = entries[0]["folder"]
+        else:
+            dropdown_checkpoint_folder.value = None
+
+    def sync_source_controls():
+        use_checkpoint = (radio_source.value or SOURCE_ANALYSIS) == SOURCE_CHECKPOINT
+        dropdown_analysis.visible = not use_checkpoint
+        dropdown_checkpoint_folder.visible = use_checkpoint
+
+    def on_fechamento_saved(select_path: str | None = None):
+        if not app_state.get("session"):
+            return
+        refresh_fechamento_dropdown(select_path=select_path)
+        refresh_analysis_dropdown(select_path=dropdown_analysis.value)
+        refresh_checkpoint_dropdown(select_folder=dropdown_checkpoint_folder.value)
+        sync_source_controls()
+        _set_lote_ui_visible(True)
+        if dropdown_fechamento.value:
+            try:
+                payload = load_fechamento(dropdown_fechamento.value)
+                txt_close_json.value = json.dumps(payload, ensure_ascii=False, indent=2)
+                parent_id = payload.get("parent_id")
+                if parent_id and not (txt_parent_id.value or "").strip():
+                    txt_parent_id.value = str(parent_id)
+                source_analysis = payload.get("source_analysis")
+                resolved = resolve_analysis_path(source_analysis)
+                if resolved:
+                    refresh_analysis_dropdown(select_path=resolved)
+                source_diff = payload.get("source_diff_folder")
+                if source_diff:
+                    refresh_checkpoint_dropdown(select_folder=source_diff)
+            except Exception:
+                pass
+        if page:
+            page.update()
+
+    if fechamento_listeners is not None:
+        fechamento_listeners.append(on_fechamento_saved)
 
     # ==========================================
     # LOGIC
@@ -240,17 +406,47 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
     def sync_ui():
         if app_state["session"]:
             lbl_logged_in.value = app_state["user"]
+            refresh_fechamento_dropdown(select_path=dropdown_fechamento.value)
+            refresh_analysis_dropdown(select_path=dropdown_analysis.value)
+            refresh_checkpoint_dropdown(select_folder=dropdown_checkpoint_folder.value)
+            sync_source_controls()
+            _set_lote_ui_visible(True)
+            if dropdown_fechamento.value:
+                try:
+                    payload = load_fechamento(dropdown_fechamento.value)
+                    txt_close_json.value = json.dumps(payload, ensure_ascii=False, indent=2)
+                    parent_id = payload.get("parent_id")
+                    if parent_id and not txt_parent_id.value.strip():
+                        txt_parent_id.value = str(parent_id)
+                    resolved = resolve_analysis_path(payload.get("source_analysis"))
+                    if resolved:
+                        refresh_analysis_dropdown(select_path=resolved)
+                    source_diff = payload.get("source_diff_folder")
+                    if source_diff:
+                        refresh_checkpoint_dropdown(select_folder=source_diff)
+                except Exception:
+                    pass
         else:
             txt_parent_id.value = ""
             txt_notas.value = ""
             txt_close_json.value = ""
             dropdown_subtasks.options = []
             dropdown_subtasks.value = None
+            dropdown_fechamento.options = []
+            dropdown_fechamento.value = None
+            dropdown_analysis.options = []
+            dropdown_analysis.value = None
+            dropdown_checkpoint_folder.options = []
+            dropdown_checkpoint_folder.value = None
+            radio_source.value = SOURCE_ANALYSIS
+            chk_tasks_only.value = False
             cached_subtasks.clear()
-            _set_batch_ui_visible(False)
+            _set_single_close_ui_visible(False)
+            _set_lote_ui_visible(False)
             lbl_form_error.visible = False
             selected_files.clear()
             update_file_list_ui()
+            sync_source_controls()
 
     sync_callbacks.append(sync_ui)
 
@@ -272,10 +468,10 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
                     ft.dropdown.Option(key=s["id"], text=f"{s['id']} - {s['title']}") for s in subs
                 ]
                 dropdown_subtasks.value = None
-                _set_batch_ui_visible(True)
+                _set_single_close_ui_visible(True)
                 lbl_form_error.visible = False
             else:
-                _set_batch_ui_visible(False)
+                _set_single_close_ui_visible(False)
                 _show_status("Nenhuma subtarefa encontrada.", "red")
 
             btn_search.disabled = False
@@ -304,6 +500,141 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
         }
         txt_close_json.value = json.dumps(payload, ensure_ascii=False, indent=2)
         _show_status("JSON gerado. Preencha notas e caminhos dos arquivos.", "green")
+
+    def handle_fechamento_selected(e):
+        fechamento_path = dropdown_fechamento.value
+        if not fechamento_path:
+            return
+        try:
+            payload = load_fechamento(fechamento_path)
+            txt_close_json.value = json.dumps(payload, ensure_ascii=False, indent=2)
+            parent_id = payload.get("parent_id")
+            if parent_id and not txt_parent_id.value.strip():
+                txt_parent_id.value = str(parent_id)
+            resolved = resolve_analysis_path(payload.get("source_analysis"))
+            if resolved:
+                refresh_analysis_dropdown(select_path=resolved)
+            _show_status(
+                f"Fechamento carregado: {len(payload.get('tasks', []))} subtarefa(s).",
+                "green",
+            )
+        except Exception as err:
+            _show_status(f"Falha ao carregar fechamento: {err}", "red")
+
+    def handle_regenerate_fechamento(e):
+        source_mode = radio_source.value or SOURCE_ANALYSIS
+        analysis_path = dropdown_analysis.value
+        checkpoint_folder = dropdown_checkpoint_folder.value
+        use_diffs = not bool(chk_tasks_only.value)
+
+        if source_mode == SOURCE_CHECKPOINT:
+            if not checkpoint_folder:
+                _show_status(
+                    "Selecione a pasta de diffs que contém ai_tasks_checkpoint.json.",
+                    "red",
+                )
+                return
+        elif not analysis_path:
+            _show_status("Selecione uma análise IA para regenerar o fechamento.", "red")
+            return
+
+        id_items: list[dict] = []
+        parent_id = (txt_parent_id.value or "").strip()
+        source_diff_folder = checkpoint_folder if source_mode == SOURCE_CHECKPOINT else None
+        preserve_files = True
+
+        fechamento_path = dropdown_fechamento.value
+        if fechamento_path:
+            try:
+                base = load_fechamento(fechamento_path)
+            except Exception as err:
+                _show_status(f"Falha ao ler fechamento base: {err}", "red")
+                return
+            parent_id = parent_id or str(base.get("parent_id") or "")
+            if source_mode != SOURCE_CHECKPOINT:
+                source_diff_folder = base.get("source_diff_folder") or None
+            elif not source_diff_folder:
+                source_diff_folder = base.get("source_diff_folder") or checkpoint_folder
+            id_items = [
+                {
+                    "id": str(item.get("id", "")).strip(),
+                    "title": "",
+                    "files": item.get("files") or [],
+                }
+                for item in (base.get("tasks") or [])
+                if str(item.get("id", "")).strip()
+            ]
+            if cached_subtasks:
+                title_by_id = {s["id"]: s.get("title", "") for s in cached_subtasks}
+                for item in id_items:
+                    item["title"] = title_by_id.get(item["id"], "")
+        elif cached_subtasks:
+            id_items = [
+                {"id": s["id"], "title": s.get("title", ""), "files": []}
+                for s in cached_subtasks
+            ]
+            preserve_files = False
+        else:
+            _show_status(
+                "Selecione um fechamento existente ou busque as subtarefas do pai.",
+                "red",
+            )
+            return
+
+        if not parent_id:
+            _show_status("Informe o ID da tarefa pai.", "red")
+            return
+        if not id_items:
+            _show_status("Nenhum ID de subtarefa disponível para regenerar.", "red")
+            return
+
+        btn_regenerate_fechamento.disabled = True
+        mode_label = "checkpoint" if source_mode == SOURCE_CHECKPOINT else "análise"
+        diffs_label = "com diffs" if use_diffs else "somente tarefas"
+        _show_status(
+            f"Regenerando fechamento ({mode_label}, {diffs_label})...",
+            "blue",
+        )
+
+        def bg_regenerate():
+            try:
+                payload, saved_path = regenerate_fechamento(
+                    analysis_path=analysis_path if source_mode == SOURCE_ANALYSIS else None,
+                    id_items=id_items,
+                    parent_id=parent_id,
+                    user=app_state.get("user") or "",
+                    diff_folder=source_diff_folder,
+                    source_mode=source_mode,
+                    use_diffs=use_diffs,
+                    preserve_files=preserve_files,
+                    synthesize_fn=synthesize_tasks_for_redmine,
+                    selected_model=list(MODEL_CONFIGS.keys())[0],
+                    target_task_count=len(id_items),
+                )
+                txt_close_json.value = json.dumps(payload, ensure_ascii=False, indent=2)
+                if not (txt_parent_id.value or "").strip():
+                    txt_parent_id.value = str(parent_id)
+                for listener in fechamento_listeners or []:
+                    try:
+                        listener(saved_path)
+                    except Exception as listener_ex:
+                        print(f"[FECHAMENTO] Listener falhou: {listener_ex}")
+                refresh_fechamento_dropdown(select_path=saved_path)
+                _show_status(
+                    f"Fechamento regenerado ({len(payload.get('tasks', []))} tarefa(s)): {saved_path}",
+                    "green",
+                )
+            except Exception as ex:
+                _show_status(f"Falha ao regenerar fechamento: {ex}", "red")
+            finally:
+                btn_regenerate_fechamento.disabled = False
+                page.update()
+
+        Thread(target=bg_regenerate, daemon=True).start()
+
+    def handle_source_change(e):
+        sync_source_controls()
+        page.update()
 
     def handle_close(e):
         sub_id = dropdown_subtasks.value
@@ -387,6 +718,9 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks):
     btn_fill_json_template.on_click = handle_fill_json_template
     btn_close_task.on_click = handle_close
     btn_close_json.on_click = handle_close_json
+    btn_regenerate_fechamento.on_click = handle_regenerate_fechamento
+    dropdown_fechamento.on_change = handle_fechamento_selected
+    radio_source.on_change = handle_source_change
 
     sync_ui()
 

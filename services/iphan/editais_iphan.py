@@ -111,8 +111,9 @@ def _download_pf_reports(session, sprint_numbers: set[int], dirs: dict) -> tuple
     return ok_count, fail_count
 
 
-def generate_evidences(session, app_state):
-    set_app_run(True)
+def generate_evidences(session, app_state, *, start_run=True):
+    if start_run:
+        set_app_run(True)
 
     if not session:
         print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")

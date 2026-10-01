@@ -15,15 +15,31 @@ from utils.month_selector import (
 from services.gitlab_service import fetch_active_projects, extract_project_diff_for_day
 from services.github_service import fetch_active_repositories, extract_repos_diff_for_day
 
-GITLAB_DEFAULT_AUTHOR = get_config("GITLAB_DEFAULT_AUTHOR")
-GITHUB_DEFAULT_AUTHOR = get_config("GITHUB_DEFAULT_AUTHOR")
-DIFF_DEFAULT_PLATFORM = get_config("DIFF_DEFAULT_PLATFORM", "gitlab").lower()
-
 
 def _default_author_for_platform(platform: str) -> str:
     if platform == "github":
-        return GITHUB_DEFAULT_AUTHOR
-    return GITLAB_DEFAULT_AUTHOR
+        return get_config("GITHUB_DEFAULT_AUTHOR")
+    return get_config("GITLAB_DEFAULT_AUTHOR")
+
+
+def _default_platform() -> str:
+    platform = get_config("DIFF_DEFAULT_PLATFORM", "gitlab").lower()
+    return platform if platform in ("gitlab", "github") else "gitlab"
+
+
+def _replace_previous_diff_folders(keep_name: str):
+    """Drop older exports only after a new one has been written."""
+    diffs_root = os.path.join(".", "diffs")
+    if not os.path.isdir(diffs_root):
+        return
+    for name in os.listdir(diffs_root):
+        if name == keep_name:
+            continue
+        path = os.path.join(diffs_root, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
 
 
 def create_diffs_tab(app_state, set_auth, sync_callbacks, diffs_listeners=None):
@@ -56,7 +72,7 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks, diffs_listeners=None):
         value=current_month_key(hoje),
     )
 
-    default_platform = DIFF_DEFAULT_PLATFORM if DIFF_DEFAULT_PLATFORM in ("gitlab", "github") else "gitlab"
+    default_platform = _default_platform()
     dropdown_platform = ft.Dropdown(
         label="Plataforma",
         width=200,
@@ -317,15 +333,14 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks, diffs_listeners=None):
         _refresh_ui()
 
         def bg_extract():
+            output_dir = None
+            export_committed = False
             try:
-                diffs_root = os.path.join(".", "diffs")
-                if os.path.exists(diffs_root):
-                    shutil.rmtree(diffs_root)
-
                 timestamp_agora = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 folder_name = f"Diffs_Filtro_{author}_{timestamp_agora}"
                 output_dir = os.path.join(".", "diffs", folder_name)
                 os.makedirs(output_dir, exist_ok=True)
+                written = 0
 
                 if platform == "gitlab":
                     repo_keys = [int(key) for key in selected_repos]
@@ -353,10 +368,23 @@ def create_diffs_tab(app_state, set_auth, sync_callbacks, diffs_listeners=None):
                     file_path = os.path.join(output_dir, f"diff_{current_date_str}.txt")
                     with open(file_path, "w", encoding="utf-8") as f:
                         f.write(diff_content)
+                    written += 1
 
+                if written == 0:
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                    show_status(
+                        "Nenhum diff encontrado no período. A pasta anterior foi mantida.",
+                        "orange",
+                    )
+                    return
+
+                _replace_previous_diff_folders(folder_name)
+                export_committed = True
                 show_status(f"Sucesso! Diff exportado para:\n{output_dir}", "green")
                 _notify_diffs_changed()
             except Exception as ex:
+                if output_dir and not export_committed:
+                    shutil.rmtree(output_dir, ignore_errors=True)
                 show_status(f"Erro ao extrair diffs: {str(ex)}", "red")
             finally:
                 btn_execute_diff.disabled = False

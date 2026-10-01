@@ -47,3 +47,25 @@ def build_date_controls(cache: dict) -> tuple[DatePickerField, DatePickerField]:
         ft.Row([date_start, date_end], alignment=ft.MainAxisAlignment.CENTER, spacing=20),
     ]
     return date_start, date_end
+
+
+def _as_date(value) -> datetime.date:
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    return datetime.datetime.strptime(str(value).strip(), "%Y-%m-%d").date()
+
+
+def apply_period(cache: dict, start_date, end_date) -> tuple[datetime.date, datetime.date]:
+    start_date = _as_date(start_date)
+    end_date = _as_date(end_date)
+    date_start, date_end = build_date_controls(cache)
+    date_start.set_date(start_date)
+    date_end.set_date(end_date)
+    cache["start_date"] = start_date
+    cache["end_date"] = end_date
+    month_dropdown = cache.get("month_dropdown")
+    if month_dropdown is not None:
+        month_dropdown.value = f"{start_date.year:04d}-{start_date.month:02d}"
+    return start_date, end_date

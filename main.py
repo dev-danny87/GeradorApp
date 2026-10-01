@@ -21,10 +21,13 @@ from layout.tab_tasks import create_tasks_tab
 from layout.tab_close_tasks import create_close_tasks_tab
 from layout.tab_diffs import create_diffs_tab
 from layout.tab_ai_analysis import create_ai_analysis_tab
+from layout.tab_config import create_config_tab
+from layout.view_join_documents import create_join_documents_view
 from services.auth_service import login_redmine, SSP_BASE_URL, PGE_BASE_URL, IPHAN_BASE_URL
 from services.pge_evidence_service import generate_evidences_pge, set_app_run as set_pge_app_run
-from services.iphan.registry import get_service as get_iphan_service
-from services.iphan._common import set_app_run as set_iphan_app_run
+from services.iphan.registry import get_project_options, get_service as get_iphan_service
+from services.iphan._common import is_app_running as is_iphan_running, options_cache, set_app_run as set_iphan_app_run
+from services.iphan._date_controls import apply_period
 from utils.output_paths import build_ssp_run_dir, month_label_from_date
 from utils.app_config import ensure_ge_txt
 from services.update_service import check_for_updates
@@ -538,13 +541,48 @@ def stop_process():
     set_iphan_app_run(False)
 
 
-def generate_evidences_iphan(session, project_key, app_state):
+def generate_evidences_iphan(session, project_key, app_state, *, start_run=True):
     service = get_iphan_service(project_key)
     if not service:
         print(f"[{timestamp()}] ERROR: Projeto IPHAN desconhecido: {project_key}")
         return
+    if start_run:
+        set_iphan_app_run(True)
+    service.generate_evidences(session, app_state, start_run=start_run)
+
+
+def generate_all_evidences_iphan(session, app_state, start_date, end_date):
+    if not session:
+        print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")
+        return
+    if not start_date or not end_date:
+        print(f"[{timestamp()}] ERROR: Informe as datas inicial e final.")
+        return
+
     set_iphan_app_run(True)
-    service.generate_evidences(session, app_state)
+    print(f"\n[{timestamp()}] Iniciando geração em lote (todos os projetos IPHAN)...")
+    print(f"[{timestamp()}] Período: {start_date} .. {end_date}")
+
+    projects = get_project_options()
+    for index, option in enumerate(projects, start=1):
+        if not is_iphan_running():
+            print(f"[{timestamp()}] Geração em lote IPHAN interrompida.")
+            return
+
+        apply_period(options_cache(app_state, option["key"]), start_date, end_date)
+        print(
+            f"\n[{timestamp()}] Iniciando geração IPHAN "
+            f"({index}/{len(projects)}): {option['label']}"
+        )
+        generate_evidences_iphan(session, option["key"], app_state, start_run=False)
+
+        if index < len(projects) and is_iphan_running():
+            time.sleep(2)
+
+    if is_iphan_running():
+        print(f"\n[{timestamp()}] Geração em lote IPHAN concluída.")
+    else:
+        print(f"[{timestamp()}] Geração em lote IPHAN interrompida.")
 
 
 def generate_all_evidences(session, start_date: str, end_date: str):
@@ -590,26 +628,31 @@ class LogConsole:
         self.page = page
         self.max_lines = max_lines
         self.newest_on_top = newest_on_top
-        self.view = ft.ListView(expand=True, spacing=2, auto_scroll=not newest_on_top)
+        self._lines: list[str] = []
+        self.view = ft.TextField(
+            multiline=True,
+            read_only=True,
+            expand=True,
+            text_size=13,
+            border=ft.InputBorder.NONE,
+        )
 
     def write(self, message):
         if message and not message.isspace():
-            text_line = ft.Text(message.strip(), size=13)
-
+            line = message.strip()
             if self.newest_on_top:
-                self.view.controls.insert(0, text_line)
+                self._lines.insert(0, line)
             else:
-                self.view.controls.append(text_line)
+                self._lines.append(line)
 
-            overflow = len(self.view.controls) - self.max_lines
+            overflow = len(self._lines) - self.max_lines
             if overflow > 0:
-                # Se for newest_on_top, os mais velhos estão no final (apaga do final)
                 if self.newest_on_top:
-                    del self.view.controls[-overflow:]
-                # Senão, os mais velhos estão no topo (apaga do começo)
+                    del self._lines[-overflow:]
                 else:
-                    del self.view.controls[:overflow]
+                    del self._lines[:overflow]
 
+            self.view.value = "\n".join(self._lines)
             if self.view.page:
                 self.view.update()
 
@@ -689,7 +732,7 @@ def main(page: ft.Page) -> None:
         initially_expanded=False,
     )
 
-    login_container = ft.Column([
+    login_form = ft.Column([
         ft.Text("Acesso Seguro", size=30, weight=ft.FontWeight.BOLD),
         ft.Text("Faça login com sua conta do Redmine para acessar os recursos."),
         ft.Divider(height=20, color="transparent"),
@@ -699,6 +742,37 @@ def main(page: ft.Page) -> None:
         ft.Row([btn_login, login_progress], alignment=ft.MainAxisAlignment.CENTER),
         login_error_text
     ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, expand=True)
+
+    def show_join_documents(e=None):
+        login_container.visible = False
+        join_docs_container.visible = True
+        page.update()
+
+    def back_to_login(e=None):
+        join_docs_container.visible = False
+        login_container.visible = True
+        page.update()
+
+    login_container = ft.Column(
+        [
+            login_form,
+            ft.Row(
+                [
+                    ft.ElevatedButton(
+                        "Unir documentos",
+                        icon=ft.Icons.PICTURE_AS_PDF,
+                        bgcolor="blue",
+                        color="white",
+                        on_click=show_join_documents,
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.END,
+            ),
+        ],
+        expand=True,
+    )
+
+    join_docs_container = create_join_documents_view(page, on_back=back_to_login)
 
     def handle_login(e):
         user, pwd = txt_username.value, txt_password.value
@@ -759,6 +833,7 @@ def main(page: ft.Page) -> None:
 
         if session:
             login_container.visible = False
+            join_docs_container.visible = False
             main_app_container.visible = True
 
             if redmine_host == "pge" and is_gestor:
@@ -766,12 +841,13 @@ def main(page: ft.Page) -> None:
             elif redmine_host == "iphan" and is_gestor:
                 tabs.tabs = [tab_evidences_iphan]
             elif redmine_host == "ssp" and is_gestor:
-                tabs.tabs = [tab_evidences, tab_tasks, tab_close, tab_diffs, tab_ai]
+                tabs.tabs = [tab_evidences, tab_tasks, tab_close, tab_diffs, tab_ai, tab_config]
             else:
-                tabs.tabs = [tab_tasks, tab_close, tab_diffs, tab_ai]
+                tabs.tabs = [tab_tasks, tab_close, tab_diffs, tab_ai, tab_config]
             tabs.selected_index = 0
         else:
             login_container.visible = True
+            join_docs_container.visible = False
             main_app_container.visible = False
             txt_password.value = ""
             login_error_text.visible = False
@@ -783,6 +859,9 @@ def main(page: ft.Page) -> None:
 
     def handle_iphan_generate(session, project_key):
         generate_evidences_iphan(session, project_key, app_state)
+
+    def handle_iphan_generate_all(session, start_date, end_date):
+        generate_all_evidences_iphan(session, app_state, start_date, end_date)
 
     # Create Tabs
     tab_evidences = create_evidences_tab(
@@ -806,6 +885,7 @@ def main(page: ft.Page) -> None:
 
     tab_evidences_iphan = create_evidences_iphan_tab(
         on_generate=handle_iphan_generate,
+        on_generate_all=handle_iphan_generate_all,
         on_stop=stop_process,
         get_timestamp=timestamp,
         app_state=app_state,
@@ -814,12 +894,37 @@ def main(page: ft.Page) -> None:
     )
 
     tab_tasks = create_tasks_tab(app_state, set_auth, sync_callbacks)
-    tab_close = create_close_tasks_tab(page, app_state, set_auth, sync_callbacks)
+    fechamento_listeners = []
+    tab_close = create_close_tasks_tab(
+        page, app_state, set_auth, sync_callbacks, fechamento_listeners=fechamento_listeners
+    )
     diffs_listeners = []
+    ai_folder_listeners = []
     tab_diffs = create_diffs_tab(app_state, set_auth, sync_callbacks, diffs_listeners)
-    tab_ai = create_ai_analysis_tab(app_state, set_auth, sync_callbacks, diffs_listeners)
+    tab_ai = create_ai_analysis_tab(
+        app_state,
+        set_auth,
+        sync_callbacks,
+        diffs_listeners,
+        fechamento_listeners=fechamento_listeners,
+        folder_refresh_listeners=ai_folder_listeners,
+    )
+    tab_config = create_config_tab(app_state, set_auth, sync_callbacks)
 
     tabs = ft.Tabs(selected_index=0, animation_duration=300, tabs=[], expand=4)
+
+    def on_tabs_change(e):
+        if not tabs.tabs:
+            return
+        selected = tabs.tabs[tabs.selected_index]
+        if selected is tab_ai:
+            for listener in ai_folder_listeners:
+                try:
+                    listener()
+                except Exception as ex:
+                    print(f"[WARN] Falha ao atualizar pastas de diff: {ex}")
+
+    tabs.on_change = on_tabs_change
 
     console.view.expand = 1
 
@@ -847,8 +952,7 @@ def main(page: ft.Page) -> None:
         console.view
     ], visible=False, expand=True)  # Hidden until login
 
-    # Add both containers to the page
-    app_page.add(login_container, main_app_container)
+    app_page.add(login_container, join_docs_container, main_app_container)
 
     print(f"[{timestamp()}] Aplicação iniciada com sucesso. Faça o login para continuar.\n")
     check_for_updates(page, CURRENT_VERSION)

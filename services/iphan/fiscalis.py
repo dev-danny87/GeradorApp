@@ -79,8 +79,9 @@ def validate_selection(app_state):
     return True, ""
 
 
-def generate_evidences(session, app_state):
-    set_app_run(True)
+def generate_evidences(session, app_state, *, start_run=True):
+    if start_run:
+        set_app_run(True)
 
     if not session:
         print(f"[{timestamp()}] ERROR: Sessão inválida. Faça login primeiro.")

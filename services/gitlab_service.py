@@ -100,6 +100,25 @@ def fetch_active_projects(username: str, start_date_str: str, end_date_str: str)
         raise e
 
 
+def _get_project_web_url(project_id: int) -> str | None:
+    """Return the GitLab web URL for a project, used as fallback for commit links."""
+    url = f"{GITLAB_BASE_URL}/projects/{project_id}"
+    r = requests.get(url, headers=_get_headers())
+    if r.status_code == 200:
+        return r.json().get("web_url")
+    return None
+
+
+def _gitlab_commit_web_url(commit: dict, project_id: int, project_web_url: str | None) -> str:
+    web_url = commit.get("web_url")
+    if web_url:
+        return web_url
+    commit_id = commit.get("id", "")
+    if project_web_url and commit_id:
+        return f"{project_web_url.rstrip('/')}/-/commit/{commit_id}"
+    return ""
+
+
 def extract_project_diff_for_day(author: str, target_date_str: str, project_ids: list) -> str | None:
     """
     Gera o diff acumulado de commits criados pelo autor em uma data específica,
@@ -139,10 +158,15 @@ def extract_project_diff_for_day(author: str, target_date_str: str, project_ids:
             combined_diff += f"PROJETO ID: {p_id}\n"
             combined_diff += f"{'=' * 60}\n\n"
 
+            project_web_url = _get_project_web_url(p_id)
+
             for commit in commits:
                 commit_id = commit['id']
                 commit_msg = commit['title']
+                commit_url = _gitlab_commit_web_url(commit, p_id, project_web_url)
 
+                if commit_url:
+                    combined_diff += f"COMMIT_URL: {commit_url}\n"
                 combined_diff += f"[{commit_id[:8]}] {commit_msg}\n"
                 combined_diff += "-" * 50 + "\n"
 

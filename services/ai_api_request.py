@@ -3,6 +3,7 @@ import json
 import requests
 from typing import Callable, Optional
 from utils.app_config import get_config
+from utils.commit_metadata import attach_commit_links_to_tasks, strip_urls_from_description
 
 # --- Configuration (resolved via get_config at call time) ---
 CLAUDE_BASE_URL = "https://api.anthropic.com/v1"
@@ -11,6 +12,8 @@ MAX_DIFF_CHARS = 150_000
 MAX_UNIT_CHARS = 120_000
 FILE_SEPARATOR_OVERHEAD = 80
 MIN_DIFF_CHARS = 150
+AI_BATCH_SIZE = 40
+AI_MERGE_MAX_PASSES = 3
 
 MODEL_CONFIGS = {
     "claude-sonnet-5": {
@@ -21,6 +24,12 @@ MODEL_CONFIGS = {
     },
     "claude-haiku-4-5-20251001": {
         "max_tokens": 32768,
+    },
+    "claude-opus-5-5": {
+        "max_tokens": 128000,
+    },
+    "claude-sonnet-5-5": {
+        "max_tokens": 128000,
     }
 }
 
@@ -28,6 +37,8 @@ MAX_OUTPUT_TOKENS = {
     "claude-sonnet-5": 131072,
     "claude-opus-4-8": 131072,
     "claude-haiku-4-5-20251001": 65536,
+    "claude-sonnet-5-5": 128000,
+    "claude-opus-5-5": 128000,
 }
 
 MERGE_RESPONSE_SCHEMA = """{
@@ -51,7 +62,8 @@ TASK_SCHEMA = """{
       "task_title": "Título conciso da tarefa (ex: Refatoração do módulo de Autenticação)",
       "category": "Feature | Bugfix | Refactor | Test | Chore",
       "estimated_hours": 0.0,
-      "description": "**Contexto:**\\nSua explicação aqui.\\n\\n**Detalhes Técnicos:**\\nSua explicação técnica aqui.\\n\\n**Impacto / Comportamento Esperado:**\\nImpacto aqui."
+      "description": "**Contexto:**\\nSua explicação aqui.\\n\\n**Detalhes Técnicos:**\\nSua explicação técnica aqui.\\n\\n**Impacto / Comportamento Esperado:**\\nImpacto aqui.",
+      "affected_files": ["caminho/relativo/Arquivo.java"]
     }
   ]
 }"""
@@ -267,8 +279,9 @@ def _call_claude_sync(
     base_max_tokens = max_tokens_override or MODEL_CONFIGS.get(selected_model, {"max_tokens": 4096})["max_tokens"]
     model_ceiling = MAX_OUTPUT_TOKENS.get(selected_model, 131072)
     token_limits = [base_max_tokens]
-    if not max_tokens_override and base_max_tokens * 2 <= model_ceiling:
-        token_limits.append(base_max_tokens * 2)
+    doubled = min(model_ceiling, base_max_tokens * 2)
+    if doubled > base_max_tokens:
+        token_limits.append(doubled)
 
     last_error: Optional[Exception] = None
 
@@ -414,7 +427,9 @@ def _build_task_create_prompt() -> str:
 2. Group related line modifications into cohesive, logical development tasks across all files in this batch.
 3. Assign provisional estimated_hours to each task based on relative complexity (they will be reconciled later).
 4. Generate an detailed description for each task, suitable for an enterprise issue tracker (like Redmine).
-5. DO NOT use words like "AI", "IA", "Artificial Intelligence", "Bot", or "Automated" in any of the titles or descriptions. Write exactly as if you are a human Senior Developer.
+5. Populate affected_files with the relative file paths changed in that task (from Arquivo: lines in the diff).
+6. DO NOT include commit URLs, repository links, or GitLab/GitHub references inside description.
+7. DO NOT use words like "AI", "IA", "Artificial Intelligence", "Bot", or "Automated" in any of the titles or descriptions. Write exactly as if you are a human Senior Developer.
 </instructions>
 
 <description_requirements>
@@ -452,6 +467,128 @@ def _compact_tasks_for_merge(tasks: list[dict]) -> list[dict]:
         }
         for index, task in enumerate(tasks)
     ]
+
+
+def _task_affinity_key(task: dict) -> tuple:
+    affected = task.get("affected_files") or []
+    first_file = affected[0] if affected else ""
+    return (
+        str(task.get("category", "")),
+        str(first_file),
+        str(task.get("task_title", "")),
+    )
+
+
+def _sort_tasks_by_affinity(tasks: list[dict]) -> list[dict]:
+    return sorted(tasks, key=_task_affinity_key)
+
+
+def _batch_max_tokens(batch_len: int) -> int:
+    return min(8192, 1024 + batch_len * 48)
+
+
+def _is_truncation_error(exc: Exception) -> bool:
+    return "truncada pelo limite de tokens" in str(exc)
+
+
+def _merge_task_batch(
+        batch: list[dict],
+        selected_model: str,
+        system_prompt: str,
+) -> list[dict]:
+    """Merge one batch of tasks. On truncation, split in half and retry."""
+    if len(batch) <= 1:
+        return [dict(t) for t in batch]
+
+    compact_input = json.dumps(
+        _compact_tasks_for_merge(batch),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    try:
+        merge_payload = _call_claude_sync(
+            system_prompt,
+            f"Task summaries to merge ({len(batch)} tasks):\n{compact_input}",
+            selected_model,
+            max_tokens_override=_batch_max_tokens(len(batch)),
+            timeout=300,
+        )
+        merge_groups = _validate_merge_groups(
+            merge_payload.get("merge_groups", []), len(batch)
+        )
+        return _apply_merge_groups(batch, merge_groups)
+    except (ValueError, requests.exceptions.Timeout) as ex:
+        if _is_truncation_error(ex) and len(batch) > 1:
+            mid = len(batch) // 2
+            print(
+                f"[API WARN] Lote de mesclagem truncado ({len(batch)} tarefas). "
+                f"Dividindo em {mid} + {len(batch) - mid}..."
+            )
+            left = _merge_task_batch(batch[:mid], selected_model, system_prompt)
+            right = _merge_task_batch(batch[mid:], selected_model, system_prompt)
+            return left + right
+        print(f"[API WARN] Lote de mesclagem falhou ({ex}). Mantendo lote sem merge.")
+        return [dict(t) for t in batch]
+
+
+def _merge_tasks_chunked(
+        tasks: list[dict],
+        selected_model: str,
+        system_prompt: str,
+        should_cancel: Optional[Callable[[], bool]] = None,
+        on_batch_progress: Optional[Callable[[str], None]] = None,
+) -> list[dict]:
+    """
+    Merge tasks in bounded batches so the model response stays under the token limit.
+    Up to AI_MERGE_MAX_PASSES passes; stops early if a pass does not reduce the count.
+    """
+    if not tasks:
+        return []
+    if len(tasks) == 1:
+        return [dict(tasks[0])]
+
+    working = [dict(t) for t in tasks]
+
+    for pass_num in range(1, AI_MERGE_MAX_PASSES + 1):
+        if should_cancel and should_cancel():
+            print("[API WARN] Mesclagem interrompida pelo usuário.")
+            break
+
+        before_count = len(working)
+        ordered = _sort_tasks_by_affinity(working)
+        batches = [
+            ordered[i:i + AI_BATCH_SIZE]
+            for i in range(0, len(ordered), AI_BATCH_SIZE)
+        ]
+        merged: list[dict] = []
+
+        for batch_index, batch in enumerate(batches, start=1):
+            if should_cancel and should_cancel():
+                print("[API WARN] Mesclagem interrompida pelo usuário.")
+                merged.extend(dict(t) for t in ordered[sum(len(b) for b in batches[:batch_index - 1]):])
+                working = merged
+                return working
+
+            message = (
+                f"Mesclando lote {batch_index}/{len(batches)} "
+                f"(passe {pass_num}/{AI_MERGE_MAX_PASSES}, {len(batch)} tarefa(s))..."
+            )
+            if on_batch_progress:
+                on_batch_progress(message)
+            else:
+                print(f"[API INFO] {message}")
+
+            merged.extend(_merge_task_batch(batch, selected_model, system_prompt))
+
+        working = merged
+        print(
+            f"[API INFO] Passe de mesclagem {pass_num}: "
+            f"{before_count} -> {len(working)} tarefa(s)."
+        )
+        if len(working) >= before_count:
+            break
+
+    return working
 
 
 def _validate_merge_groups(merge_groups: list, task_count: int) -> list[list[int]]:
@@ -495,6 +632,12 @@ def _apply_merge_groups(all_tasks: list[dict], merge_groups: list[list[int]]) ->
             affected_files.update(task.get("affected_files") or [])
         if affected_files:
             result["affected_files"] = sorted(affected_files)
+
+        commit_links: set[str] = set()
+        for task in group_tasks:
+            commit_links.update(task.get("commit_links") or [])
+        if commit_links:
+            result["commit_links"] = sorted(commit_links)
 
         merged.append(result)
     return merged
@@ -569,6 +712,276 @@ def _apply_ai_hour_adjustments(
     }
 
 
+def _apply_batch_hours(tasks: list[dict], hours: list) -> list[dict]:
+    """Apply hour values to a batch without enforcing a global total."""
+    if len(hours) != len(tasks):
+        raise ValueError(
+            f"Reconciliação: quantidade de horas ({len(hours)}) difere da quantidade de tarefas ({len(tasks)})."
+        )
+    adjusted = []
+    for task, hour in zip(tasks, hours):
+        updated = dict(task)
+        updated["estimated_hours"] = round(float(hour), 2)
+        adjusted.append(updated)
+    return adjusted
+
+
+def _reconcile_task_batch(
+        batch: list[dict],
+        total_hours: float,
+        selected_model: str,
+) -> tuple[list[dict], Optional[str], bool]:
+    """
+    Adjust hours for one batch. Returns (tasks, rationale_or_none, ai_succeeded).
+    On truncation, splits in half and retries. Failed batches keep provisional hours.
+    """
+    if not batch:
+        return [], None, False
+
+    compact_input = json.dumps(
+        _compact_tasks_for_merge(batch),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    try:
+        reconcile_payload = _call_claude_sync(
+            _build_reconcile_system_prompt(total_hours, len(batch)),
+            f"Adjust hours for these tasks:\n{compact_input}",
+            selected_model,
+            max_tokens_override=_batch_max_tokens(len(batch)),
+            timeout=300,
+        )
+        hours = reconcile_payload.get("hours")
+        if not isinstance(hours, list):
+            raise ValueError("Reconciliação: resposta sem lista 'hours'.")
+        rationale = (reconcile_payload.get("allocation_rationale_pt") or "").strip() or None
+        return _apply_batch_hours(batch, hours), rationale, True
+    except (ValueError, requests.exceptions.Timeout) as ex:
+        if _is_truncation_error(ex) and len(batch) > 1:
+            mid = len(batch) // 2
+            print(
+                f"[API WARN] Lote de reconciliação truncado ({len(batch)} tarefas). "
+                f"Dividindo em {mid} + {len(batch) - mid}..."
+            )
+            left_tasks, left_r, left_ok = _reconcile_task_batch(
+                batch[:mid], total_hours, selected_model
+            )
+            right_tasks, right_r, right_ok = _reconcile_task_batch(
+                batch[mid:], total_hours, selected_model
+            )
+            rationale_parts = [r for r in (left_r, right_r) if r]
+            rationale = " ".join(rationale_parts) if rationale_parts else None
+            return left_tasks + right_tasks, rationale, left_ok or right_ok
+        print(
+            f"[API WARN] Lote de reconciliação falhou ({ex}). "
+            "Mantendo horas provisórias."
+        )
+        return [dict(t) for t in batch], None, False
+
+
+def _reconcile_hours_chunked(
+        tasks: list[dict],
+        total_hours: float,
+        selected_model: str,
+        should_cancel: Optional[Callable[[], bool]] = None,
+        on_batch_progress: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """
+    Adjust provisional hours in bounded batches, then scale locally to total_hours.
+    Failed or cancelled batches keep their provisional hours.
+    """
+    if not tasks:
+        raise ValueError("Nenhuma tarefa para reconciliar.")
+
+    ordered = _sort_tasks_by_affinity([dict(t) for t in tasks])
+    batches = [
+        ordered[i:i + AI_BATCH_SIZE]
+        for i in range(0, len(ordered), AI_BATCH_SIZE)
+    ]
+    adjusted: list[dict] = []
+    any_ai_success = False
+    rationales: list[str] = []
+
+    for batch_index, batch in enumerate(batches, start=1):
+        if should_cancel and should_cancel():
+            print("[API WARN] Reconciliação interrompida pelo usuário.")
+            start = sum(len(b) for b in batches[:batch_index - 1])
+            adjusted.extend(dict(t) for t in ordered[start:])
+            break
+
+        message = (
+            f"Reconciliando lote {batch_index}/{len(batches)} "
+            f"({len(batch)} tarefa(s))..."
+        )
+        if on_batch_progress:
+            on_batch_progress(message)
+        else:
+            print(f"[API INFO] {message}")
+
+        batch_tasks, rationale, ok = _reconcile_task_batch(
+            batch, total_hours, selected_model
+        )
+        adjusted.extend(batch_tasks)
+        if ok:
+            any_ai_success = True
+        if rationale:
+            rationales.append(rationale)
+
+    final_payload = _reconcile_hours_locally(adjusted, total_hours)
+    if any_ai_success and rationales:
+        final_payload["mathematical_reconciliation"]["allocation_rationale_pt"] = " ".join(
+            rationales[:3]
+        )
+    elif any_ai_success:
+        final_payload["mathematical_reconciliation"]["allocation_rationale_pt"] = (
+            f"Horas ajustadas pela IA em lotes e escaladas localmente para totalizar "
+            f"exatamente {float(total_hours):.1f}h."
+        )
+    else:
+        print(
+            "[API WARN] Reconciliação via IA falhou em todos os lotes. "
+            "Aplicando ajuste proporcional local."
+        )
+    return final_payload
+
+
+def _build_synthesize_merge_prompt(min_hours: float) -> str:
+    return f"""You are an expert Technical Project Manager. Consolidate a task list for Redmine by grouping related work items.
+
+<input_format>
+You receive a JSON array of compact task summaries. Each item has:
+- i: task index (integer)
+- task_title: title in Portuguese
+- category: Feature | Bugfix | Refactor | Test | Chore
+- estimated_hours: provisional hours
+</input_format>
+
+<instructions>
+1. Group indices that describe related or overlapping work (same module, feature area, or logical deliverable).
+2. Minimize the number of groups while keeping unrelated work separate.
+3. Prefer groups whose summed estimated_hours are at least {min_hours} hours when possible.
+4. Every index from 0 to N-1 MUST appear exactly once across all groups.
+5. Do NOT rewrite titles or descriptions. Only decide merge groupings.
+</instructions>
+
+<constraints>
+- Output STRICTLY AND ONLY valid JSON. No markdown. No commentary. No reasoning text.
+- The response MUST start with {{ and match the schema exactly.
+</constraints>
+
+<output_schema>
+""" + MERGE_RESPONSE_SCHEMA + """
+</output_schema>"""
+
+
+def _merge_two_tasks_local(primary: dict, secondary: dict) -> dict:
+    """Merge two tasks locally, appending the secondary title into the description."""
+    result = dict(primary)
+    sec_title = (secondary.get("task_title") or secondary.get("title") or "").strip()
+    if sec_title:
+        desc = (result.get("description") or "").strip()
+        marker = "**Tarefas incorporadas:**"
+        if marker in desc:
+            result["description"] = f"{desc}\n- {sec_title}"
+        elif desc:
+            result["description"] = f"{desc}\n\n{marker}\n- {sec_title}"
+        else:
+            result["description"] = f"{marker}\n- {sec_title}"
+
+    result["estimated_hours"] = round(
+        float(primary.get("estimated_hours", 0)) + float(secondary.get("estimated_hours", 0)), 2
+    )
+
+    affected: set[str] = set()
+    for task in (primary, secondary):
+        affected.update(task.get("affected_files") or [])
+    if affected:
+        result["affected_files"] = sorted(affected)
+
+    links: set[str] = set()
+    for task in (primary, secondary):
+        links.update(task.get("commit_links") or [])
+    if links:
+        result["commit_links"] = sorted(links)
+
+    return result
+
+
+def _pack_tasks_to_min_hours(tasks: list[dict], min_hours: float) -> list[dict]:
+    """Merge smallest tasks until each has at least min_hours (or only one remains)."""
+    if not tasks:
+        return []
+
+    working = [dict(t) for t in tasks]
+    total = round(sum(float(t.get("estimated_hours", 0)) for t in working), 2)
+
+    if total < min_hours or len(working) == 1:
+        if len(working) == 1:
+            return working
+        merged = working[0]
+        for task in working[1:]:
+            merged = _merge_two_tasks_local(merged, task)
+        return [merged]
+
+    while len(working) > 1:
+        has_under = any(float(t.get("estimated_hours", 0)) < min_hours for t in working)
+        if not has_under:
+            break
+        working.sort(key=lambda t: float(t.get("estimated_hours", 0)))
+        smallest = working.pop(0)
+        second = working.pop(0)
+        working.append(_merge_two_tasks_local(second, smallest))
+
+    if len(working) > 1:
+        under_idx = next(
+            (i for i, t in enumerate(working) if float(t.get("estimated_hours", 0)) < min_hours),
+            None,
+        )
+        if under_idx is not None:
+            small = working.pop(under_idx)
+            working.sort(key=lambda t: float(t.get("estimated_hours", 0)), reverse=True)
+            working[0] = _merge_two_tasks_local(working[0], small)
+
+    return working
+
+
+def synthesize_tasks_for_redmine(
+        tasks: list[dict],
+        selected_model: str,
+        min_hours: float = 8.0,
+) -> list[dict]:
+    """
+    Consolidate tasks for Redmine creation: AI grouping of related work, then local
+    packing so each task has at least min_hours while preserving the original total.
+    """
+    if not tasks:
+        return []
+
+    original_total = round(sum(float(t.get("estimated_hours", 0)) for t in tasks), 2)
+    print(f"[API INFO] Sintetizando {len(tasks)} tarefa(s) (mínimo {min_hours}h cada)...")
+
+    if len(tasks) == 1:
+        merged = [dict(tasks[0])]
+    else:
+        merged = _merge_tasks_chunked(
+            tasks,
+            selected_model,
+            _build_synthesize_merge_prompt(min_hours),
+        )
+        print(f"[API INFO] IA agrupou em {len(merged)} tarefa(s).")
+
+    packed = _pack_tasks_to_min_hours(merged, min_hours)
+
+    packed_total = round(sum(float(t.get("estimated_hours", 0)) for t in packed), 2)
+    drift = round(original_total - packed_total, 2)
+    if drift != 0 and packed:
+        packed[-1]["estimated_hours"] = round(float(packed[-1]["estimated_hours"]) + drift, 2)
+
+    packed.sort(key=lambda t: float(t.get("estimated_hours", 0)), reverse=True)
+    print(f"[API INFO] Síntese concluída: {len(packed)} tarefa(s), total {original_total}h.")
+    return packed
+
+
 def _build_merge_tasks_prompt() -> str:
     return """You are an expert Technical Project Manager. Merge duplicate or overlapping tasks by grouping their indices.
 
@@ -603,14 +1016,16 @@ def _build_reconcile_system_prompt(total_hours: float, task_count: int) -> str:
 <input_format>
 You receive a JSON array of compact tasks with fields: i, task_title, category, estimated_hours.
 There are exactly {task_count} tasks with indices 0 to {task_count - 1}.
+The global target for the FULL task list (across all batches) is approximately {total_hours}h; this batch is only a subset.
 </input_format>
 
 <instructions>
-1. Review each task's scope and adjust estimated_hours for reasonableness.
-2. The sum of ALL values in the "hours" array MUST EXACTLY equal {total_hours}.
-3. Return hours in the SAME ORDER as the input indices (index 0 first, then 1, etc.).
-4. Do NOT change titles, categories, or descriptions.
-5. Do NOT add or remove tasks.
+1. Review each task's scope and adjust estimated_hours for reasonableness, starting from the provisional values.
+2. Return hours in the SAME ORDER as the input indices (index 0 first, then 1, etc.).
+3. Do NOT force this batch alone to sum to {total_hours}; a later local step will scale the full list.
+4. Keep relative proportions sensible (larger/more complex work gets more hours).
+5. Do NOT change titles, categories, or descriptions.
+6. Do NOT add or remove tasks.
 </instructions>
 
 <constraints>
@@ -621,7 +1036,7 @@ There are exactly {task_count} tasks with indices 0 to {task_count - 1}.
 </constraints>
 
 <output_schema>
-{RECONCILE_RESPONSE_SCHEMA.replace("[0.0, 0.0, 0.0]", f"[/* exactly {task_count} numbers summing to {total_hours} */]")}
+{RECONCILE_RESPONSE_SCHEMA.replace("[0.0, 0.0, 0.0]", f"[/* exactly {task_count} numbers */]")}
 </output_schema>"""
 
 
@@ -696,6 +1111,10 @@ def analyze_diffs_grouped_with_claude(
                 selected_model,
             )
             _validate_tasks_payload(unit_payload, f"Arquivo {index} ({label})")
+            unit_tasks_list = unit_payload["tasks"]
+            attach_commit_links_to_tasks(unit_tasks_list, content)
+            for task in unit_tasks_list:
+                strip_urls_from_description(task)
         except Exception as ex:
             # One bad file must not throw away everything already processed.
             print(f"[API ERROR] Falha no arquivo {label}: {ex}")
@@ -735,48 +1154,24 @@ def analyze_diffs_grouped_with_claude(
 
     current_step = len(units) + 1
     report("Mesclando tarefas de todos os arquivos...")
-    compact_merge_input = json.dumps(
-        _compact_tasks_for_merge(all_tasks),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    merge_payload = _call_claude_sync(
-        _build_merge_tasks_prompt(),
-        f"Task summaries to merge ({len(all_tasks)} tasks):\n{compact_merge_input}",
+    merged_tasks = _merge_tasks_chunked(
+        all_tasks,
         selected_model,
-        max_tokens_override=min(16384, 4096 + len(all_tasks) * 64),
-        timeout=120,
+        _build_merge_tasks_prompt(),
+        should_cancel=should_cancel,
+        on_batch_progress=report,
     )
-    merge_groups = _validate_merge_groups(merge_payload.get("merge_groups", []), len(all_tasks))
-    merged_tasks = _apply_merge_groups(all_tasks, merge_groups)
+    print(f"[API INFO] Mesclagem concluída: {len(all_tasks)} -> {len(merged_tasks)} tarefa(s).")
 
     current_step = total_steps
     report(f"Reconciliando horas para total de {total_hours}h...")
-    compact_reconcile_input = json.dumps(
-        _compact_tasks_for_merge(merged_tasks),
-        ensure_ascii=False,
-        separators=(",", ":"),
+    final_payload = _reconcile_hours_chunked(
+        merged_tasks,
+        total_hours,
+        selected_model,
+        should_cancel=should_cancel,
+        on_batch_progress=report,
     )
-    try:
-        reconcile_payload = _call_claude_sync(
-            _build_reconcile_system_prompt(total_hours, len(merged_tasks)),
-            f"Adjust hours for these tasks:\n{compact_reconcile_input}",
-            selected_model,
-            max_tokens_override=4096,
-            timeout=120,
-        )
-        hours = reconcile_payload.get("hours")
-        if not isinstance(hours, list):
-            raise ValueError("Reconciliação: resposta sem lista 'hours'.")
-        final_payload = _apply_ai_hour_adjustments(
-            merged_tasks,
-            hours,
-            total_hours,
-            reconcile_payload.get("allocation_rationale_pt", ""),
-        )
-    except (ValueError, requests.exceptions.Timeout) as ex:
-        print(f"[API WARN] Reconciliação via IA falhou ({ex}). Aplicando ajuste proporcional local.")
-        final_payload = _reconcile_hours_locally(merged_tasks, total_hours)
 
     tasks = _validate_tasks_payload(final_payload, "Reconciliação")
 
