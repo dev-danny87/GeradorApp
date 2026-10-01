@@ -9,7 +9,6 @@ from services.ai_api_request import (
     CHECKPOINT_FILENAME,
     MODEL_CONFIGS,
     analyze_diffs_grouped_with_claude,
-    synthesize_tasks_for_redmine,
 )
 from diff_task_automation import create_ai_redmine_tasks
 from redmine_mappings import (
@@ -19,7 +18,9 @@ from redmine_mappings import (
     ROLE_OPTIONS,
     USER_OPTIONS,
 )
+from layout.task_hour_list import TaskHourListView
 from utils.ai_tasks_store import list_saved_results, load_tasks, save_results, save_fechamento
+from utils.banco_horas_store import save_banco_batch
 from utils.commit_metadata import strip_urls_from_description
 from utils.fechamento_builder import (
     build_fechamento_payload,
@@ -37,6 +38,7 @@ from utils.redmine_version import (
     fetch_open_versions,
     get_dynamic_version,
 )
+from utils.task_hour_selection import ensure_task_ids, sum_task_hours
 from utils.ui_components import DatePickerField
 
 DIFFS_ROOT = os.path.join(".", "diffs")
@@ -114,12 +116,15 @@ def create_ai_analysis_tab(
         diffs_listeners=None,
         fechamento_listeners=None,
         folder_refresh_listeners=None,
+        banco_listeners=None,
 ):
     lbl_logged_in = ft.Text("", color="green", weight=ft.FontWeight.BOLD, size=14)
     lbl_status = ft.Text("", visible=False, weight=ft.FontWeight.BOLD)
     progress_ring = ft.ProgressRing(visible=False, width=20, height=20)
 
     stop_event = Event()
+    current_analysis_path: list[str | None] = [None]
+    current_source_folder: list[str | None] = [None]
 
     dropdown_folders = ft.Dropdown(label="Pasta de Diffs Exportados", width=520)
 
@@ -131,12 +136,6 @@ def create_ai_analysis_tab(
             for model_key in MODEL_CONFIGS.keys()
         ],
         value=list(MODEL_CONFIGS.keys())[0],
-    )
-
-    txt_ai_hours = ft.TextField(
-        label="Total de Horas",
-        width=150,
-        input_filter=ft.InputFilter(allow=True, regex_string=r"^[0-9.]*$", replacement_string=""),
     )
 
     btn_process_ai = ft.ElevatedButton("Processar com IA", icon=ft.Icons.AUTO_AWESOME, color="white", bgcolor="purple")
@@ -179,9 +178,12 @@ def create_ai_analysis_tab(
         if not dropdown_month.value:
             return
         apply_month_to_date_pickers(dropdown_month.value, date_start, date_due)
-        if date_start.page:
-            date_start.update()
-            date_due.update()
+        try:
+            if date_start.page:
+                date_start.update()
+                date_due.update()
+        except RuntimeError:
+            pass
 
     dropdown_month = create_month_shortcut_dropdown(
         on_month_change,
@@ -199,7 +201,7 @@ def create_ai_analysis_tab(
     dropdown_sistema = _dropdown_from_mapping("Sistema", SYSTEM_OPTIONS, defaults["sistema"])
     dropdown_orgao = _dropdown_from_mapping("Órgão solicitante", ORGAN_OPTIONS, defaults["orgao"])
     dropdown_atribuicao = _dropdown_from_mapping(
-        "Atribuição Catálogo", ROLE_OPTIONS, defaults["atribuicao"]
+        "Atribuição Catálogo - Desenv", ROLE_OPTIONS, defaults["atribuicao"]
     )
     dropdown_projeto = _dropdown_from_mapping(
         "Projeto Vinculado", PROJECT_FILTER_OPTIONS, defaults["projeto"]
@@ -211,20 +213,27 @@ def create_ai_analysis_tab(
         value=defaults.get("desenvolvedor_id"),
     )
 
+    task_list = TaskHourListView(title="Tarefas estimadas (clique para expandir)")
+
     wrapper_ai_box = ft.Container(
         content=ft.Column([
             ft.Text("Análise Inteligente e Geração de Tarefas", weight=ft.FontWeight.BOLD, size=15, color="purple"),
-            ft.Row([dropdown_model, dropdown_folders, txt_ai_hours], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row(
+                [dropdown_model, dropdown_folders, dropdown_atribuicao],
+                alignment=ft.MainAxisAlignment.START,
+                wrap=True,
+            ),
             ft.Row([btn_process_ai, btn_stop_ai], alignment=ft.MainAxisAlignment.START, wrap=True),
             ft.Divider(),
-            ft.Row([dropdown_results, btn_create_redmine_tasks], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row([dropdown_results], alignment=ft.MainAxisAlignment.START, wrap=True),
+            task_list.root,
+            ft.Row([btn_create_redmine_tasks], alignment=ft.MainAxisAlignment.START, wrap=True),
             ft.Text("Campos Redmine (tarefa pai e subtarefas)", weight=ft.FontWeight.BOLD, size=13),
             ft.Row([dropdown_month], alignment=ft.MainAxisAlignment.START),
             ft.Row([date_start, date_due], alignment=ft.MainAxisAlignment.START, spacing=20, tight=True),
             ft.Row([dropdown_versao], alignment=ft.MainAxisAlignment.START),
             ft.Row([dropdown_sistema, dropdown_orgao], alignment=ft.MainAxisAlignment.START, wrap=True),
-            ft.Row([dropdown_atribuicao, dropdown_projeto], alignment=ft.MainAxisAlignment.START, wrap=True),
-            ft.Row([dropdown_desenvolvedor], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row([dropdown_projeto, dropdown_desenvolvedor], alignment=ft.MainAxisAlignment.START, wrap=True),
         ]),
         padding=15,
         border=ft.border.all(1, ft.Colors.PURPLE_300),
@@ -253,7 +262,10 @@ def create_ai_analysis_tab(
         scroll=ft.ScrollMode.AUTO)
 
     def _refresh_ui():
-        page = ai_view.page
+        try:
+            page = ai_view.page
+        except RuntimeError:
+            return
         if page:
             page.update()
 
@@ -261,6 +273,13 @@ def create_ai_analysis_tab(
         lbl_status.value = text
         lbl_status.color = color
         lbl_status.visible = True
+
+    def _notify_banco_listeners():
+        for listener in banco_listeners or []:
+            try:
+                listener()
+            except Exception as ex:
+                print(f"[BANCO] Listener falhou: {ex}")
 
     def _apply_field_defaults():
         current_defaults = redmine_task_defaults(app_state.get("user"))
@@ -291,6 +310,8 @@ def create_ai_analysis_tab(
                 dropdown_versao.page.update()
             else:
                 dropdown_versao.update()
+        except RuntimeError:
+            pass
         except Exception:
             pass
 
@@ -306,6 +327,26 @@ def create_ai_analysis_tab(
             print(f"[VERSÃO] Usando fallback get_dynamic_version()={fallback_id}")
         _apply_versions(versions, preferred_id=previous)
 
+    def _show_tasks_from_payload(payload: dict | list, results_path: str | None = None):
+        if isinstance(payload, dict):
+            tasks = payload.get("tasks") or []
+            current_source_folder[0] = payload.get("source_diff_folder") or None
+            if payload.get("atribuicao_catalogo"):
+                dropdown_atribuicao.value = payload["atribuicao_catalogo"]
+        else:
+            tasks = payload if isinstance(payload, list) else []
+            current_source_folder[0] = None
+
+        if not isinstance(tasks, list):
+            tasks = []
+        tasks = ensure_task_ids(tasks)
+        current_analysis_path[0] = results_path
+        task_list.set_tasks(tasks)
+        btn_create_redmine_tasks.visible = bool(tasks)
+        total = sum_task_hours(tasks)
+        if tasks:
+            show_status(f"{len(tasks)} tarefa(s) carregada(s) — total {total:g}h.", "green")
+
     def refresh_saved_results(select_path: str = None):
         entries = list_saved_results()
         dropdown_results.options.clear()
@@ -319,10 +360,34 @@ def create_ai_analysis_tab(
                 dropdown_results.value = select_path
             elif dropdown_results.value not in [entry["path"] for entry in entries]:
                 dropdown_results.value = entries[0]["path"]
+            _load_selected_analysis()
         else:
             dropdown_results.value = None
+            task_list.clear()
+            btn_create_redmine_tasks.visible = False
+            current_analysis_path[0] = None
 
-        btn_create_redmine_tasks.visible = bool(entries)
+    def _load_selected_analysis(e=None):
+        results_path = dropdown_results.value
+        if not results_path:
+            task_list.clear()
+            btn_create_redmine_tasks.visible = False
+            return
+        try:
+            with open(results_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            _show_tasks_from_payload(payload, results_path)
+        except Exception as ex:
+            try:
+                tasks = load_tasks(results_path)
+                _show_tasks_from_payload({"tasks": tasks}, results_path)
+            except Exception:
+                show_status(f"Falha ao carregar análise: {ex}", "red")
+                task_list.clear()
+                btn_create_redmine_tasks.visible = False
+        _refresh_ui()
+
+    dropdown_results.on_change = _load_selected_analysis
 
     def refresh_ai_folders():
         dropdown_folders.options.clear()
@@ -358,9 +423,9 @@ def create_ai_analysis_tab(
     btn_stop_ai.on_click = handle_stop_ai
 
     def handle_create_redmine_tasks(e):
-        results_path = dropdown_results.value
-        if not results_path:
-            show_status("Selecione uma análise salva.", "red")
+        selected_tasks = task_list.selected_tasks()
+        if not selected_tasks:
+            show_status("Selecione ao menos uma tarefa (use Horas a criar ou os checkboxes).", "red")
             _refresh_ui()
             return
 
@@ -372,32 +437,30 @@ def create_ai_analysis_tab(
 
         btn_create_redmine_tasks.disabled = True
         progress_ring.visible = True
-        show_status("Lendo respostas da IA e formatando tarefas...", "blue")
+        show_status("Preparando tarefas selecionadas...", "blue")
         _refresh_ui()
 
         def bg_create():
+            bank_path = None
             try:
-                with open(results_path, "r", encoding="utf-8") as f:
-                    analysis_payload = json.load(f)
+                remainder = task_list.remainder_tasks()
+                results_path = current_analysis_path[0] or dropdown_results.value or ""
+                source_diff_folder = current_source_folder[0]
 
-                subtasks_list = analysis_payload.get("tasks", []) if isinstance(analysis_payload, dict) else []
-                if not subtasks_list:
-                    subtasks_list = load_tasks(results_path)
+                if remainder:
+                    bank_path = save_banco_batch(
+                        remainder,
+                        user=app_state.get("user") or "",
+                        source_analysis=os.path.basename(results_path) if results_path else "",
+                        source_diff_folder=source_diff_folder or "",
+                        atribuicao_catalogo=dropdown_atribuicao.value or "",
+                    )
+                    if bank_path:
+                        print(f"[BANCO] {len(remainder)} tarefa(s) salvas em {bank_path}")
+                        _notify_banco_listeners()
 
-                if not subtasks_list:
-                    show_status("Nenhuma tarefa pôde ser extraída do arquivo de resultados.", "red")
-                    return
+                subtasks_list = [strip_urls_from_description(dict(t)) for t in selected_tasks]
 
-                selected_model = (
-                    (analysis_payload.get("model") if isinstance(analysis_payload, dict) else None)
-                    or dropdown_model.value
-                    or list(MODEL_CONFIGS.keys())[0]
-                )
-
-                source_diff_folder = (
-                    analysis_payload.get("source_diff_folder")
-                    if isinstance(analysis_payload, dict) else None
-                )
                 if source_diff_folder:
                     diff_dir = os.path.join(DIFFS_ROOT, source_diff_folder)
                     if os.path.isdir(diff_dir):
@@ -409,28 +472,11 @@ def create_ai_analysis_tab(
                 else:
                     commits_index = {}
 
-                original_count = len(subtasks_list)
-                min_hours = get_min_task_hours()
-                show_status(
-                    f"Sintetizando {original_count} tarefa(s) (mínimo {min_hours}h cada)...",
-                    "blue",
-                )
-                _refresh_ui()
-
-                subtasks_list = synthesize_tasks_for_redmine(
-                    subtasks_list,
-                    selected_model,
-                    min_hours=min_hours,
-                )
-
-                subtasks_list = [strip_urls_from_description(task) for task in subtasks_list]
-
                 start_date = date_start.value
                 end_date = date_due.value
 
                 show_status(
-                    f"Criando Tarefa Pai e {len(subtasks_list)} subtarefa(s) "
-                    f"(de {original_count} originais). Verifique o console.",
+                    f"Criando Tarefa Pai e {len(subtasks_list)} subtarefa(s). Verifique o console.",
                     "blue",
                 )
                 _refresh_ui()
@@ -450,11 +496,41 @@ def create_ai_analysis_tab(
                 )
 
                 if not creation_result:
+                    if selected_tasks:
+                        # Put selected tasks in the bank so nothing is lost after a full failure.
+                        save_banco_batch(
+                            selected_tasks,
+                            user=app_state.get("user") or "",
+                            source_analysis=os.path.basename(results_path) if results_path else "",
+                            source_diff_folder=source_diff_folder or "",
+                            atribuicao_catalogo=dropdown_atribuicao.value or "",
+                        )
+                        _notify_banco_listeners()
                     show_status("Falha ao criar tarefas no Redmine. Verifique o console.", "red")
                     return
 
                 parent_id = creation_result["parent_id"]
                 created_subtasks = creation_result.get("subtasks", [])
+                created_ids = {
+                    str(item.get("task_id"))
+                    for item in created_subtasks
+                    if item.get("task_id")
+                }
+                failed_tasks = [
+                    t for t in selected_tasks
+                    if str(t.get("task_id") or "") not in created_ids
+                ]
+
+                if failed_tasks:
+                    save_banco_batch(
+                        failed_tasks,
+                        user=app_state.get("user") or "",
+                        source_analysis=os.path.basename(results_path) if results_path else "",
+                        source_diff_folder=source_diff_folder or "",
+                        atribuicao_catalogo=dropdown_atribuicao.value or "",
+                    )
+                    _notify_banco_listeners()
+                    print(f"[BANCO] {len(failed_tasks)} subtarefa(s) não criadas devolvidas ao banco.")
 
                 if not created_subtasks:
                     show_status(
@@ -462,6 +538,11 @@ def create_ai_analysis_tab(
                         "orange",
                     )
                     return
+
+                created_task_objs = [
+                    t for t in subtasks_list
+                    if str(t.get("task_id") or "") in created_ids
+                ] or subtasks_list[:len(created_subtasks)]
 
                 fechamento_payload = build_fechamento_payload(
                     parent_id=parent_id,
@@ -471,12 +552,12 @@ def create_ai_analysis_tab(
                             "title": created.get("title") or subtask.get("task_title") or "",
                             "files": [],
                         }
-                        for created, subtask in zip(created_subtasks, subtasks_list)
+                        for created, subtask in zip(created_subtasks, created_task_objs)
                     ],
-                    tasks=subtasks_list,
+                    tasks=created_task_objs,
                     commits_index=commits_index,
                     generated_by=app_state["user"] or "",
-                    source_analysis=os.path.basename(results_path),
+                    source_analysis=os.path.basename(results_path) if results_path else "",
                     source_diff_folder=source_diff_folder or "",
                     preserve_files=False,
                 )
@@ -499,11 +580,25 @@ def create_ai_analysis_tab(
                     except Exception as listener_ex:
                         print(f"[FECHAMENTO] Listener falhou: {listener_ex}")
 
+                leftover_note = ""
+                if remainder or failed_tasks:
+                    leftover_note = (
+                        f" {len(remainder) + len(failed_tasks)} tarefa(s) ficaram no banco de horas."
+                    )
+
                 show_status(
                     f"Concluído! Pai #{parent_id}, {len(created_subtasks)} subtarefa(s). "
-                    f"Fechamento salvo em: {fechamento_path}",
+                    f"Fechamento: {fechamento_path}.{leftover_note}",
                     "green",
                 )
+
+                # Refresh list: remove created tasks from the on-screen selection source.
+                remaining_on_screen = [
+                    t for t in task_list.tasks
+                    if str(t.get("task_id") or "") not in created_ids
+                ]
+                task_list.set_tasks(remaining_on_screen)
+                btn_create_redmine_tasks.visible = bool(remaining_on_screen)
 
             except json.JSONDecodeError:
                 show_status("Falha ao decodificar a resposta. Formato JSON inválido.", "red")
@@ -521,7 +616,7 @@ def create_ai_analysis_tab(
     def handle_process_ai(e):
         selected_model = dropdown_model.value
         folder_name = dropdown_folders.value
-        hours_str = (txt_ai_hours.value or "").strip()
+        atribuicao = dropdown_atribuicao.value
 
         if not selected_model:
             show_status("Selecione um Modelo de IA.", "red")
@@ -531,15 +626,8 @@ def create_ai_analysis_tab(
             show_status("Selecione uma pasta de diffs.", "red")
             _refresh_ui()
             return
-        if not hours_str:
-            show_status("Insira o total de horas.", "red")
-            _refresh_ui()
-            return
-
-        try:
-            total_hours = float(hours_str)
-        except ValueError:
-            show_status("Valor de horas inválido.", "red")
+        if not atribuicao:
+            show_status("Selecione a Atribuição Catálogo - Desenv.", "red")
             _refresh_ui()
             return
 
@@ -591,30 +679,36 @@ def create_ai_analysis_tab(
 
                 final_payload = analyze_diffs_grouped_with_claude(
                     diff_items,
-                    total_hours,
                     selected_model,
                     on_progress=on_progress,
                     output_dir=target_dir,
                     should_cancel=stop_event.is_set,
+                    atribuicao_catalogo=atribuicao,
+                    min_hours=get_min_task_hours(),
                 )
 
                 final_payload["source_diff_folder"] = folder_name
                 final_payload["generated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
                 final_payload["generated_by"] = app_state["user"] or ""
                 final_payload["model"] = selected_model
+                final_payload["atribuicao_catalogo"] = atribuicao
 
                 results_file = save_results(final_payload, app_state["user"] or "")
                 refresh_saved_results(select_path=results_file)
+                _show_tasks_from_payload(final_payload, results_file)
 
                 task_count = len(final_payload.get("tasks", []))
+                total_h = sum_task_hours(final_payload.get("tasks", []))
                 if final_payload.get("partial"):
                     show_status(
-                        f"Processamento interrompido. {task_count} tarefa(s) parciais salvas em: {results_file}",
+                        f"Processamento interrompido. {task_count} tarefa(s) ({total_h:g}h) "
+                        f"parciais salvas em: {results_file}",
                         "orange",
                     )
                 else:
                     show_status(
-                        f"Processamento concluído! {task_count} tarefa(s) salvas em: {results_file}",
+                        f"Processamento concluído! {task_count} tarefa(s) ({total_h:g}h) "
+                        f"salvas em: {results_file}",
                         "green",
                     )
 
@@ -640,7 +734,6 @@ def create_ai_analysis_tab(
             Thread(target=_load_open_versions, daemon=True).start()
         else:
             lbl_status.visible = False
-            txt_ai_hours.value = ""
             dropdown_versao.options = []
             dropdown_versao.value = None
             dropdown_versao.hint_text = "Faça login para carregar as versões abertas"

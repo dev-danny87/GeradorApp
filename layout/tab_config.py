@@ -31,7 +31,7 @@ _FIELD_LABELS = {
     "DIFF_DEFAULT_PLATFORM": "Plataforma padrão (Diffs)",
     "RD_DEFAULT_SISTEMA": "Sistema padrão",
     "RD_DEFAULT_ORGAO": "Órgão solicitante padrão",
-    "RD_DEFAULT_ATRIBUICAO": "Atribuição Catálogo padrão",
+    "RD_DEFAULT_ATRIBUICAO": "Atribuição Catálogo - Desenv padrão",
     "RD_DEFAULT_PROJETO": "Projeto Vinculado padrão",
     "RD_DEFAULT_DESENVOLVEDOR": "Desenvolvedor padrão",
     "RD_MIN_TASK_HOURS": "Mínimo de horas por tarefa (agrupamento IA)",
@@ -167,7 +167,7 @@ def create_config_tab(app_state, set_auth, sync_callbacks):
             lbl_env_warning.value = (
                 "Atenção: o arquivo .env do projeto tem valor(es) para: "
                 + ", ".join(overridden)
-                + ". Esses valores têm prioridade sobre ge.txt."
+                + ". Esses valores têm prioridade sobre taskManager/ge.txt."
             )
             lbl_env_warning.visible = True
         else:
@@ -223,7 +223,7 @@ def create_config_tab(app_state, set_auth, sync_callbacks):
         [
             ft.Text("Configurações", size=24, weight=ft.FontWeight.BOLD),
             ft.Text(
-                "Edite o arquivo ge.txt do seu usuário. Alterações passam a valer após Salvar "
+                "Edite o arquivo ge.txt em ~/taskManager. Alterações passam a valer após Salvar "
                 "(sem reiniciar o app).",
                 size=13,
             ),

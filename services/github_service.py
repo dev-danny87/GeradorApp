@@ -10,7 +10,7 @@ def _get_headers():
     token = get_config("GITHUB_TOKEN")
     if not token:
         raise ValueError(
-            "GITHUB_TOKEN não encontrado no .env nem em ~/ge.txt! Verifique suas configurações."
+            "GITHUB_TOKEN não encontrado no .env nem em ~/taskManager/ge.txt! Verifique suas configurações."
         )
     return {
         "Authorization": f"Bearer {token}",

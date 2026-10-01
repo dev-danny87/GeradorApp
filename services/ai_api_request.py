@@ -86,7 +86,9 @@ ProgressCallback = Callable[[int, int, str], None]
 def _get_headers() -> dict:
     api_key = get_config("CLAUDE_KEY")
     if not api_key:
-        raise ValueError("CLAUDE_KEY não encontrada no .env nem em ~/ge.txt!")
+        raise ValueError(
+            "CLAUDE_KEY não encontrada no .env nem em ~/taskManager/ge.txt!"
+        )
     return {
         "x-api-key": api_key,
         "anthropic-version": ANTHROPIC_VERSION,
@@ -419,13 +421,19 @@ def _format_unit_diff(filename: str, label: str, content: str) -> str:
     return f"--- FILE: {header} ---\n{content}"
 
 
-def _build_task_create_prompt() -> str:
+def _build_task_create_prompt(atribuicao_catalogo: str = "Desenvolvedor Sênior") -> str:
+    role = (atribuicao_catalogo or "Desenvolvedor Sênior").strip() or "Desenvolvedor Sênior"
     return f"""You are an expert Software Architect and Technical Project Manager. Your task is to analyze git diffs and create a structured, development-ready task list.
+
+<role_context>
+Estimates must reflect the effort a professional with catalog role "{role}" would need to complete the work.
+Junior roles need more hours for the same scope; senior roles need fewer hours. Do not invent fake complexity.
+</role_context>
 
 <instructions>
 1. Evaluate ALL provided code diff files carefully (each file is separated by a --- FILE: header).
 2. Group related line modifications into cohesive, logical development tasks across all files in this batch.
-3. Assign provisional estimated_hours to each task based on relative complexity (they will be reconciled later).
+3. Assign provisional estimated_hours to each task based on real scope complexity for the role "{role}".
 4. Generate an detailed description for each task, suitable for an enterprise issue tracker (like Redmine).
 5. Populate affected_files with the relative file paths changed in that task (from Arquivo: lines in the diff).
 6. DO NOT include commit URLs, repository links, or GitLab/GitHub references inside description.
@@ -643,45 +651,32 @@ def _apply_merge_groups(all_tasks: list[dict], merge_groups: list[list[int]]) ->
     return merged
 
 
-def _reconcile_hours_locally(tasks: list[dict], total_hours: float) -> dict:
+def _finalize_free_hours(tasks: list[dict], rationale: str = "") -> dict:
+    """Sort by hours and wrap without forcing a global total."""
     if not tasks:
         raise ValueError("Nenhuma tarefa para reconciliar.")
 
-    target = float(total_hours)
-    current = round(sum(float(t.get("estimated_hours", 0)) for t in tasks), 4)
-
-    if current <= 0:
-        per_task = round(target / len(tasks), 2)
-        for task in tasks:
-            task["estimated_hours"] = per_task
-    else:
-        ratio = target / current
-        for task in tasks:
-            task["estimated_hours"] = round(float(task.get("estimated_hours", 0)) * ratio, 2)
-
-    drift = round(target - sum(float(t["estimated_hours"]) for t in tasks), 2)
-    if drift != 0:
-        tasks[0]["estimated_hours"] = round(float(tasks[0]["estimated_hours"]) + drift, 2)
-
-    tasks.sort(key=lambda t: float(t.get("estimated_hours", 0)), reverse=True)
-
+    sorted_tasks = sorted(
+        [dict(t) for t in tasks],
+        key=lambda t: float(t.get("estimated_hours", 0) or 0),
+        reverse=True,
+    )
+    total = round(sum(float(t.get("estimated_hours", 0) or 0) for t in sorted_tasks), 2)
     return {
         "mathematical_reconciliation": {
-            "target_total_hours": target,
-            "allocation_rationale_pt": (
-                f"As horas foram ajustadas proporcionalmente com base nas estimativas originais "
-                f"({current:.1f}h) para totalizar exatamente {target:.1f}h. "
-                f"Tarefas ordenadas da maior para a menor carga horária."
+            "target_total_hours": total,
+            "allocation_rationale_pt": rationale or (
+                f"Estimativa livre com base na complexidade das tarefas. "
+                f"Total estimado: {total:.1f}h."
             ),
         },
-        "tasks": tasks,
+        "tasks": sorted_tasks,
     }
 
 
 def _apply_ai_hour_adjustments(
     tasks: list[dict],
     hours: list,
-    total_hours: float,
     rationale: str,
 ) -> dict:
     if len(hours) != len(tasks):
@@ -695,21 +690,7 @@ def _apply_ai_hour_adjustments(
         updated["estimated_hours"] = round(float(hour), 2)
         adjusted.append(updated)
 
-    drift = round(float(total_hours) - sum(t["estimated_hours"] for t in adjusted), 2)
-    if drift != 0 and adjusted:
-        adjusted[0]["estimated_hours"] = round(adjusted[0]["estimated_hours"] + drift, 2)
-
-    adjusted.sort(key=lambda t: float(t.get("estimated_hours", 0)), reverse=True)
-
-    return {
-        "mathematical_reconciliation": {
-            "target_total_hours": float(total_hours),
-            "allocation_rationale_pt": rationale or (
-                f"Horas ajustadas para totalizar exatamente {total_hours}h."
-            ),
-        },
-        "tasks": adjusted,
-    }
+    return _finalize_free_hours(adjusted, rationale)
 
 
 def _apply_batch_hours(tasks: list[dict], hours: list) -> list[dict]:
@@ -728,8 +709,8 @@ def _apply_batch_hours(tasks: list[dict], hours: list) -> list[dict]:
 
 def _reconcile_task_batch(
         batch: list[dict],
-        total_hours: float,
         selected_model: str,
+        atribuicao_catalogo: str,
 ) -> tuple[list[dict], Optional[str], bool]:
     """
     Adjust hours for one batch. Returns (tasks, rationale_or_none, ai_succeeded).
@@ -745,7 +726,7 @@ def _reconcile_task_batch(
     )
     try:
         reconcile_payload = _call_claude_sync(
-            _build_reconcile_system_prompt(total_hours, len(batch)),
+            _build_free_estimate_system_prompt(len(batch), atribuicao_catalogo),
             f"Adjust hours for these tasks:\n{compact_input}",
             selected_model,
             max_tokens_override=_batch_max_tokens(len(batch)),
@@ -760,34 +741,34 @@ def _reconcile_task_batch(
         if _is_truncation_error(ex) and len(batch) > 1:
             mid = len(batch) // 2
             print(
-                f"[API WARN] Lote de reconciliação truncado ({len(batch)} tarefas). "
+                f"[API WARN] Lote de estimativa truncado ({len(batch)} tarefas). "
                 f"Dividindo em {mid} + {len(batch) - mid}..."
             )
             left_tasks, left_r, left_ok = _reconcile_task_batch(
-                batch[:mid], total_hours, selected_model
+                batch[:mid], selected_model, atribuicao_catalogo
             )
             right_tasks, right_r, right_ok = _reconcile_task_batch(
-                batch[mid:], total_hours, selected_model
+                batch[mid:], selected_model, atribuicao_catalogo
             )
             rationale_parts = [r for r in (left_r, right_r) if r]
             rationale = " ".join(rationale_parts) if rationale_parts else None
             return left_tasks + right_tasks, rationale, left_ok or right_ok
         print(
-            f"[API WARN] Lote de reconciliação falhou ({ex}). "
+            f"[API WARN] Lote de estimativa falhou ({ex}). "
             "Mantendo horas provisórias."
         )
         return [dict(t) for t in batch], None, False
 
 
-def _reconcile_hours_chunked(
+def _estimate_hours_chunked(
         tasks: list[dict],
-        total_hours: float,
         selected_model: str,
+        atribuicao_catalogo: str,
         should_cancel: Optional[Callable[[], bool]] = None,
         on_batch_progress: Optional[Callable[[str], None]] = None,
 ) -> dict:
     """
-    Adjust provisional hours in bounded batches, then scale locally to total_hours.
+    Adjust provisional hours in bounded batches without scaling to a user total.
     Failed or cancelled batches keep their provisional hours.
     """
     if not tasks:
@@ -804,13 +785,13 @@ def _reconcile_hours_chunked(
 
     for batch_index, batch in enumerate(batches, start=1):
         if should_cancel and should_cancel():
-            print("[API WARN] Reconciliação interrompida pelo usuário.")
+            print("[API WARN] Estimativa interrompida pelo usuário.")
             start = sum(len(b) for b in batches[:batch_index - 1])
             adjusted.extend(dict(t) for t in ordered[start:])
             break
 
         message = (
-            f"Reconciliando lote {batch_index}/{len(batches)} "
+            f"Estimando horas — lote {batch_index}/{len(batches)} "
             f"({len(batch)} tarefa(s))..."
         )
         if on_batch_progress:
@@ -819,7 +800,7 @@ def _reconcile_hours_chunked(
             print(f"[API INFO] {message}")
 
         batch_tasks, rationale, ok = _reconcile_task_batch(
-            batch, total_hours, selected_model
+            batch, selected_model, atribuicao_catalogo
         )
         adjusted.extend(batch_tasks)
         if ok:
@@ -827,23 +808,21 @@ def _reconcile_hours_chunked(
         if rationale:
             rationales.append(rationale)
 
-    final_payload = _reconcile_hours_locally(adjusted, total_hours)
     if any_ai_success and rationales:
-        final_payload["mathematical_reconciliation"]["allocation_rationale_pt"] = " ".join(
-            rationales[:3]
-        )
+        rationale_text = " ".join(rationales[:3])
     elif any_ai_success:
-        final_payload["mathematical_reconciliation"]["allocation_rationale_pt"] = (
-            f"Horas ajustadas pela IA em lotes e escaladas localmente para totalizar "
-            f"exatamente {float(total_hours):.1f}h."
+        rationale_text = (
+            "Horas ajustadas livremente pela IA com base na complexidade e "
+            f"na atribuição catálogo ({atribuicao_catalogo})."
         )
     else:
         print(
-            "[API WARN] Reconciliação via IA falhou em todos os lotes. "
-            "Aplicando ajuste proporcional local."
+            "[API WARN] Estimativa via IA falhou em todos os lotes. "
+            "Mantendo horas provisórias."
         )
-    return final_payload
+        rationale_text = ""
 
+    return _finalize_free_hours(adjusted, rationale_text)
 
 def _build_synthesize_merge_prompt(min_hours: float) -> str:
     return f"""You are an expert Technical Project Manager. Consolidate a task list for Redmine by grouping related work items.
@@ -1010,22 +989,24 @@ You receive a JSON array of compact task summaries. Each item has:
 </output_schema>"""
 
 
-def _build_reconcile_system_prompt(total_hours: float, task_count: int) -> str:
+def _build_free_estimate_system_prompt(task_count: int, atribuicao_catalogo: str) -> str:
+    role = (atribuicao_catalogo or "Desenvolvedor Sênior").strip() or "Desenvolvedor Sênior"
     return f"""You are an expert Technical Project Manager. Adjust ONLY the estimated hours for an existing task list.
 
 <input_format>
 You receive a JSON array of compact tasks with fields: i, task_title, category, estimated_hours.
 There are exactly {task_count} tasks with indices 0 to {task_count - 1}.
-The global target for the FULL task list (across all batches) is approximately {total_hours}h; this batch is only a subset.
+Catalog role for effort estimates: "{role}".
 </input_format>
 
 <instructions>
-1. Review each task's scope and adjust estimated_hours for reasonableness, starting from the provisional values.
+1. Review each task's scope and set estimated_hours to what a "{role}" would need for that work.
 2. Return hours in the SAME ORDER as the input indices (index 0 first, then 1, etc.).
-3. Do NOT force this batch alone to sum to {total_hours}; a later local step will scale the full list.
-4. Keep relative proportions sensible (larger/more complex work gets more hours).
-5. Do NOT change titles, categories, or descriptions.
-6. Do NOT add or remove tasks.
+3. Do NOT force the batch to sum to any target total. Estimate freely from complexity and role.
+4. Junior roles need more hours for the same scope; senior roles need fewer hours.
+5. Keep relative proportions sensible (larger/more complex work gets more hours).
+6. Do NOT change titles, categories, or descriptions.
+7. Do NOT add or remove tasks.
 </instructions>
 
 <constraints>
@@ -1040,19 +1021,31 @@ The global target for the FULL task list (across all batches) is approximately {
 </output_schema>"""
 
 
+def _assign_task_ids(tasks: list[dict], prefix: str = "task") -> list[dict]:
+    stamped: list[dict] = []
+    for index, task in enumerate(tasks, start=1):
+        copy = dict(task)
+        if not copy.get("task_id"):
+            copy["task_id"] = f"{prefix}-{index:04d}"
+        stamped.append(copy)
+    return stamped
+
+
 def analyze_diffs_grouped_with_claude(
         diff_items: list[tuple[str, str]],
-        total_hours: float,
         selected_model: str,
         on_progress: Optional[ProgressCallback] = None,
         output_dir: Optional[str] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        atribuicao_catalogo: str = "Desenvolvedor Sênior",
+        min_hours: float = 8.0,
 ) -> dict:
     """
     Processes one diff file per request:
     1. Each file   -> independently creates tasks (checkpointed after every file)
     2. Merge step  -> deduplicates/consolidates all task lists
-    3. Final step  -> reconciles estimated_hours to total_hours
+    3. Estimate    -> free hour adjustment for the catalog role (no forced total)
+    4. Pack        -> merge small tasks until each has at least min_hours
 
     Files already recorded in the checkpoint are skipped, and `should_cancel`
     stops the run before the next request is issued.
@@ -1060,6 +1053,7 @@ def analyze_diffs_grouped_with_claude(
     if not diff_items:
         raise ValueError("Nenhum diff fornecido para análise.")
 
+    role = (atribuicao_catalogo or "Desenvolvedor Sênior").strip() or "Desenvolvedor Sênior"
     units = _build_diff_units(diff_items)
     if not units:
         raise ValueError("Nenhum diff com conteúdo válido encontrado para análise.")
@@ -1078,7 +1072,7 @@ def analyze_diffs_grouped_with_claude(
     unit_tasks: list[dict] = []
     failed_labels: list[str] = []
 
-    total_steps = len(units) + 2  # units + merge + reconcile
+    total_steps = len(units) + 3  # units + merge + estimate + pack
     current_step = 0
     cancelled = False
 
@@ -1106,7 +1100,7 @@ def analyze_diffs_grouped_with_claude(
 
         try:
             unit_payload = _call_claude_sync(
-                _build_task_create_prompt(),
+                _build_task_create_prompt(role),
                 f"Code Diffs to Analyze (1 file):\n\n{_format_unit_diff(filename, label, content)}",
                 selected_model,
             )
@@ -1135,17 +1129,28 @@ def analyze_diffs_grouped_with_claude(
     if not all_tasks:
         raise ValueError("A IA não retornou nenhuma tarefa para os diffs analisados.")
 
+    def _pack_and_stamp(tasks: list[dict], rationale: str = "") -> dict:
+        packed = _pack_tasks_to_min_hours(tasks, float(min_hours))
+        stamped = _assign_task_ids(packed)
+        payload = _finalize_free_hours(stamped, rationale)
+        payload["atribuicao_catalogo"] = role
+        payload["min_hours"] = float(min_hours)
+        return payload
+
     if cancelled:
-        # Merge/reconcile are network calls too, so a cancelled run finishes locally.
+        # Merge/estimate are network calls too, so a cancelled run finishes locally.
         current_step = total_steps
         report("Consolidando localmente as tarefas já processadas...")
-        final_payload = _reconcile_hours_locally(all_tasks, total_hours)
+        final_payload = _pack_and_stamp(
+            all_tasks,
+            "Estimativa parcial (processamento interrompido). Horas provisórias embaladas ao mínimo.",
+        )
         final_payload["partial"] = True
         final_payload["cancelled_after_units"] = len(processed_labels)
         final_payload["total_units"] = len(units)
         if failed_labels:
             final_payload["failed_units"] = failed_labels
-        _validate_tasks_payload(final_payload, "Reconciliação local")
+        _validate_tasks_payload(final_payload, "Consolidação local")
         report(
             f"Processamento interrompido: {len(processed_labels)} de {len(units)} arquivo(s) "
             f"consolidados em {len(final_payload['tasks'])} tarefa(s)."
@@ -1163,24 +1168,28 @@ def analyze_diffs_grouped_with_claude(
     )
     print(f"[API INFO] Mesclagem concluída: {len(all_tasks)} -> {len(merged_tasks)} tarefa(s).")
 
-    current_step = total_steps
-    report(f"Reconciliando horas para total de {total_hours}h...")
-    final_payload = _reconcile_hours_chunked(
+    current_step = len(units) + 2
+    report(f"Estimando horas livremente ({role})...")
+    estimated_payload = _estimate_hours_chunked(
         merged_tasks,
-        total_hours,
         selected_model,
+        role,
         should_cancel=should_cancel,
         on_batch_progress=report,
     )
+    estimated_tasks = _validate_tasks_payload(estimated_payload, "Estimativa")
+    rationale = (
+        (estimated_payload.get("mathematical_reconciliation") or {}).get("allocation_rationale_pt")
+        or ""
+    )
 
-    tasks = _validate_tasks_payload(final_payload, "Reconciliação")
+    current_step = total_steps
+    report(f"Agrupando tarefas com mínimo de {float(min_hours):g}h...")
+    final_payload = _pack_and_stamp(estimated_tasks, rationale)
+    tasks = _validate_tasks_payload(final_payload, "Empacotamento")
 
-    allocated = round(sum(float(t.get("estimated_hours", 0)) for t in tasks), 4)
-    if allocated != float(total_hours):
-        print(
-            f"[API WARN] Soma das horas ({allocated}) difere do alvo ({total_hours}). "
-            "Resultado retornado conforme resposta da API."
-        )
+    allocated = round(sum(float(t.get("estimated_hours", 0)) for t in tasks), 2)
+    print(f"[API INFO] Total estimado livremente: {allocated}h em {len(tasks)} tarefa(s).")
 
     if failed_labels:
         final_payload["failed_units"] = failed_labels

@@ -21,6 +21,7 @@ from layout.tab_tasks import create_tasks_tab
 from layout.tab_close_tasks import create_close_tasks_tab
 from layout.tab_diffs import create_diffs_tab
 from layout.tab_ai_analysis import create_ai_analysis_tab
+from layout.tab_banco_horas import create_banco_horas_tab
 from layout.tab_config import create_config_tab
 from layout.view_join_documents import create_join_documents_view
 from services.auth_service import login_redmine, SSP_BASE_URL, PGE_BASE_URL, IPHAN_BASE_URL
@@ -841,9 +842,9 @@ def main(page: ft.Page) -> None:
             elif redmine_host == "iphan" and is_gestor:
                 tabs.tabs = [tab_evidences_iphan]
             elif redmine_host == "ssp" and is_gestor:
-                tabs.tabs = [tab_evidences, tab_tasks, tab_close, tab_diffs, tab_ai, tab_config]
+                tabs.tabs = [tab_evidences, tab_tasks, tab_close, tab_diffs, tab_ai, tab_banco, tab_config]
             else:
-                tabs.tabs = [tab_tasks, tab_close, tab_diffs, tab_ai, tab_config]
+                tabs.tabs = [tab_tasks, tab_close, tab_diffs, tab_ai, tab_banco, tab_config]
             tabs.selected_index = 0
         else:
             login_container.visible = True
@@ -900,6 +901,7 @@ def main(page: ft.Page) -> None:
     )
     diffs_listeners = []
     ai_folder_listeners = []
+    banco_listeners = []
     tab_diffs = create_diffs_tab(app_state, set_auth, sync_callbacks, diffs_listeners)
     tab_ai = create_ai_analysis_tab(
         app_state,
@@ -908,10 +910,17 @@ def main(page: ft.Page) -> None:
         diffs_listeners,
         fechamento_listeners=fechamento_listeners,
         folder_refresh_listeners=ai_folder_listeners,
+        banco_listeners=banco_listeners,
+    )
+    tab_banco = create_banco_horas_tab(
+        app_state,
+        set_auth,
+        sync_callbacks,
+        banco_listeners=banco_listeners,
     )
     tab_config = create_config_tab(app_state, set_auth, sync_callbacks)
 
-    tabs = ft.Tabs(selected_index=0, animation_duration=300, tabs=[], expand=4)
+    tabs = ft.Tabs(selected_index=0, animation_duration=300, tabs=[], expand=1)
 
     def on_tabs_change(e):
         if not tabs.tabs:
@@ -923,6 +932,12 @@ def main(page: ft.Page) -> None:
                     listener()
                 except Exception as ex:
                     print(f"[WARN] Falha ao atualizar pastas de diff: {ex}")
+        elif selected is tab_banco:
+            for listener in banco_listeners:
+                try:
+                    listener()
+                except Exception as ex:
+                    print(f"[WARN] Falha ao atualizar banco de horas: {ex}")
 
     tabs.on_change = on_tabs_change
 

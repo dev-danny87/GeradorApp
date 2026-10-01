@@ -1,7 +1,7 @@
 """
-Application config: prefer .env / process env, then fall back to ~/ge.txt.
+Application config: prefer .env / process env, then fall back to ~/taskManager/ge.txt.
 
-On Windows, ge.txt lives at C:\\Users\\<username>\\ge.txt
+On Windows, ge.txt lives at C:\\Users\\<username>\\taskManager\\ge.txt
 Format (same as .env):
     KEY=value
     # comments allowed
@@ -10,6 +10,7 @@ Format (same as .env):
 from __future__ import annotations
 
 import os
+import shutil
 from functools import lru_cache
 from pathlib import Path
 
@@ -22,6 +23,8 @@ except ImportError:  # optional — ge.txt alone is enough
 load_dotenv()
 
 GE_TXT_FILENAME = "ge.txt"
+TASK_MANAGER_DIRNAME = "taskManager"
+BANCO_HORAS_DIRNAME = "bancoDeHoras"
 
 GE_TXT_DEFAULTS = [
     "RD_HOST",
@@ -56,13 +59,51 @@ GE_TXT_DEFAULT_VALUES = {
 }
 
 
+def task_manager_dir() -> Path:
+    return Path.home() / TASK_MANAGER_DIRNAME
+
+
+def banco_horas_dir() -> Path:
+    return task_manager_dir() / BANCO_HORAS_DIRNAME
+
+
 def ge_txt_path() -> Path:
+    return task_manager_dir() / GE_TXT_FILENAME
+
+
+def legacy_ge_txt_path() -> Path:
+    """Previous location before the taskManager migration."""
     return Path.home() / GE_TXT_FILENAME
 
 
+def ensure_task_manager_dirs() -> Path:
+    """Create ~/taskManager and ~/taskManager/bancoDeHoras if missing."""
+    root = task_manager_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    banco_horas_dir().mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _migrate_legacy_ge_txt(new_path: Path) -> None:
+    """
+    Move ~/ge.txt into ~/taskManager/ge.txt when the new file does not exist.
+    If both exist, keep the new file and leave the legacy one untouched.
+    """
+    legacy = legacy_ge_txt_path()
+    if new_path.is_file() or not legacy.is_file():
+        return
+    try:
+        shutil.move(str(legacy), str(new_path))
+        print(f"[CONFIG] ge.txt migrado para {new_path}")
+    except OSError as ex:
+        print(f"[CONFIG WARN] Falha ao migrar ge.txt: {ex}")
+
+
 def ensure_ge_txt() -> Path:
-    """Create ~/ge.txt with empty defaults if it does not exist. Never overwrite."""
+    """Create ~/taskManager/ge.txt with empty defaults if it does not exist. Never overwrite."""
+    ensure_task_manager_dirs()
     path = ge_txt_path()
+    _migrate_legacy_ge_txt(path)
     if path.is_file():
         return path
 
@@ -107,7 +148,10 @@ def _parse_kv_file(path: Path) -> dict[str, str]:
 
 @lru_cache(maxsize=1)
 def _load_ge_txt() -> dict[str, str]:
-    return _parse_kv_file(ge_txt_path())
+    ensure_task_manager_dirs()
+    path = ge_txt_path()
+    _migrate_legacy_ge_txt(path)
+    return _parse_kv_file(path)
 
 
 def reload_config() -> None:
@@ -117,7 +161,7 @@ def reload_config() -> None:
 
 
 def load_ge_txt_values() -> dict[str, str]:
-    """Return parsed ~/ge.txt values (cache cleared so disk is re-read)."""
+    """Return parsed ge.txt values (cache cleared so disk is re-read)."""
     ensure_ge_txt()
     _load_ge_txt.cache_clear()
     return dict(_load_ge_txt())
@@ -125,7 +169,7 @@ def load_ge_txt_values() -> dict[str, str]:
 
 def save_ge_txt(values: dict[str, str]) -> Path:
     """
-    Rewrite ~/ge.txt with known keys in GE_TXT_DEFAULTS order.
+    Rewrite ~/taskManager/ge.txt with known keys in GE_TXT_DEFAULTS order.
     Reloads cache and copies non-empty values into os.environ.
     """
     path = ensure_ge_txt()
@@ -170,7 +214,7 @@ def get_config(key: str, default: str = "") -> str:
 
     Priority:
       1. Non-empty process env / .env variable
-      2. Matching key in ~/ge.txt
+      2. Matching key in ~/taskManager/ge.txt
       3. default
     """
     env_value = os.getenv(key)

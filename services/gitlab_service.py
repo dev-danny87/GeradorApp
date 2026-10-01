@@ -13,7 +13,7 @@ def _get_headers():
     token = get_config("GITLAB_TOKEN")
     if not token:
         raise ValueError(
-            "GITLAB_TOKEN não encontrado no .env nem em ~/ge.txt! Verifique suas configurações."
+            "GITLAB_TOKEN não encontrado no .env nem em ~/taskManager/ge.txt! Verifique suas configurações."
         )
     return {"PRIVATE-TOKEN": token}
 

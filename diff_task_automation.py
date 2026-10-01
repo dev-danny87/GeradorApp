@@ -193,6 +193,7 @@ def create_ai_redmine_tasks(
                         print(f"[{_timestamp()}]  -> [OK] Subtarefa '{sub_title}' criada! ID: {sub_id} ({sub_hours}h)")
                         created_subtasks.append({
                             "id": sub_id,
+                            "task_id": subtask.get("task_id"),
                             "title": sub_title,
                             "estimated_hours": sub_hours,
                             "commit_links": subtask.get("commit_links") or [],
