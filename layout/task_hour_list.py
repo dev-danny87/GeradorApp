@@ -18,12 +18,18 @@ class TaskHourListView:
             *,
             title: str = "Tarefas estimadas",
             on_selection_change=None,
+            on_delete=None,
             initially_expanded: bool = False,
+            show_budget: bool = True,
+            show_lote_select: bool = True,
     ):
         self._tasks: list[dict] = []
         self._checkboxes: dict[str, ft.Checkbox] = {}
         self._on_selection_change = on_selection_change
+        self._on_delete = on_delete
         self._applying_budget = False
+        self._syncing_lote = False
+        self._show_lote_select = show_lote_select
 
         self.lbl_summary = ft.Text("", size=12, color=ft.Colors.GREY_700)
         self.txt_budget = ft.TextField(
@@ -33,10 +39,37 @@ class TaskHourListView:
             on_change=self._on_budget_change,
         )
         self.lbl_selection = ft.Text("", size=12, weight=ft.FontWeight.BOLD)
+        self.chk_lote = ft.Checkbox(
+            value=False,
+            tristate=True,
+            tooltip="Selecionar todas neste lote",
+            on_change=self._on_lote_change,
+        )
 
         self.task_column = ft.Column(spacing=4, tight=True)
+        selection_controls = [self.lbl_selection]
+        if show_budget:
+            selection_controls.insert(0, self.txt_budget)
+
+        title_controls: list = []
+        if show_lote_select:
+            title_controls.append(self.chk_lote)
+        title_controls.append(ft.Text(title, weight=ft.FontWeight.BOLD, expand=True))
+        if on_delete:
+            title_controls.append(
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    icon_color="red",
+                    icon_size=20,
+                    tooltip="Excluir este lote",
+                    on_click=lambda e: on_delete(),
+                )
+            )
         self.expansion = ft.ExpansionTile(
-            title=ft.Text(title, weight=ft.FontWeight.BOLD),
+            title=ft.Row(
+                title_controls,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
             subtitle=self.lbl_summary,
             initially_expanded=initially_expanded,
             controls=[
@@ -44,7 +77,7 @@ class TaskHourListView:
                     content=ft.Column(
                         [
                             ft.Row(
-                                [self.txt_budget, self.lbl_selection],
+                                selection_controls,
                                 alignment=ft.MainAxisAlignment.START,
                                 wrap=True,
                                 spacing=16,
@@ -136,6 +169,18 @@ class TaskHourListView:
         self._refresh_selection_label()
         self._notify()
 
+    def select_all(self):
+        for checkbox in self._checkboxes.values():
+            checkbox.value = True
+        self._refresh_selection_label()
+        self._notify()
+
+    def clear_selection(self):
+        for checkbox in self._checkboxes.values():
+            checkbox.value = False
+        self._refresh_selection_label()
+        self._notify()
+
     def apply_budget(self, budget_hours: float | None = None):
         if budget_hours is None:
             raw = (self.txt_budget.value or "").strip()
@@ -161,26 +206,25 @@ class TaskHourListView:
         self.set_tasks([])
         self.txt_budget.value = ""
 
+    def _on_lote_change(self, e):
+        if self._syncing_lote:
+            return
+        if self.chk_lote.value:
+            self.select_all()
+        else:
+            self.clear_selection()
+        self._update_page()
+
     def _on_budget_change(self, e):
         self.apply_budget()
-        try:
-            page = self.root.page
-        except RuntimeError:
-            return
-        if page:
-            page.update()
+        self._update_page()
 
     def _on_checkbox_change(self, e):
         if self._applying_budget:
             return
         self._refresh_selection_label()
         self._notify()
-        try:
-            page = self.root.page
-        except RuntimeError:
-            return
-        if page:
-            page.update()
+        self._update_page()
 
     def _refresh_selection_label(self):
         selected = self.selected_tasks()
@@ -190,6 +234,31 @@ class TaskHourListView:
             f"Selecionadas: {len(selected)} ({selected_hours:g}h) — "
             f"Restantes: {remainder:g}h"
         )
+        self._sync_lote_checkbox()
+
+    def _sync_lote_checkbox(self):
+        if not self._show_lote_select:
+            return
+        total = len(self._checkboxes)
+        selected = len(self.selected_ids())
+        self._syncing_lote = True
+        try:
+            if total == 0 or selected == 0:
+                self.chk_lote.value = False
+            elif selected == total:
+                self.chk_lote.value = True
+            else:
+                self.chk_lote.value = None
+        finally:
+            self._syncing_lote = False
+
+    def _update_page(self):
+        try:
+            page = self.root.page
+        except RuntimeError:
+            return
+        if page:
+            page.update()
 
     def _notify(self):
         if self._on_selection_change:

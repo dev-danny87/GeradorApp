@@ -41,9 +41,39 @@ USER_OPTIONS = {
     "Diogo Bruno Almeida": "6"
 }
 
+# Usuários optgroup from /issues/{id}/time_entries/new (Tempo de trabalho).
+TIME_ENTRY_USER_OPTIONS = {
+    ".Net GEIN": "129",
+    "Bot Redmine SSP-GO": "25",
+    "Bruno Sousa Vidal": "70",
+    "Celio Vasconcelos Lima": "8",
+    "Danilo Ponce": "142",
+    "Denise Vieira da Silva Taquary": "156",
+    "Diego André Mota da Silva": "78",
+    "Diogo Bruno Almeida": "6",
+    "ESDRAS FERNANDES FERMON": "137",
+    "Gleice Daiana Vieira de Araujo": "15",
+    "Igor Alves de Oliveira": "13",
+    "João Victor Alves Barbosa": "160",
+    "Leandro Gonçalves da Costa": "153",
+    "Lucas Ferreira Madruga": "141",
+    "Luiz Cruz Silveira Neto": "99",
+    "Marcos Antônio Campelo Junior": "175",
+    "Marcus Vinicius Seguti Luis": "16",
+    "Paulo Victor Alves Vieira": "166",
+    "Pedro Henrique Vieira Silva": "135",
+    "Tales Garcia Fernandes": "96",
+    "Teste Solução Automatização Redmine": "138",
+    "Wagner Helio da Silva Filho": "77",
+    "Welson Elias Rodrigues de Souza": "20",
+    "Winicius Luiz Fidelis de Farias": "91",
+    "Zeno Dolinski": "89",
+}
+
 LOGIN_TO_USER_ID = {
     "danilo.machado": "142",
-    "leandro.gcosta": "153"
+    "leandro.gcosta": "153",
+    "Marcos Antônio Campelo Junior": "175",
 }
 
 SYSTEM_OPTIONS = {

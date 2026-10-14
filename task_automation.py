@@ -2,7 +2,6 @@ import requests
 from bs4 import BeautifulSoup
 import datetime
 
-from redmine_mappings import LOGIN_TO_USER_ID
 from utils.redmine_version import get_dynamic_version
 
 BASE_URL = "https://redmine.ssp.go.gov.br"
@@ -43,22 +42,14 @@ def _custom_fields_payload(
     return payload
 
 
-def _resolve_logged_in_user_id(username) -> str:
-    user_id = LOGIN_TO_USER_ID.get(username, "")
-    if not user_id:
+def _resolve_required_user_id(user_id, field_label: str) -> str:
+    resolved = (user_id or "").strip()
+    if not resolved:
+        print(f"[{_timestamp()}] [ERRO] Nenhum valor selecionado para '{field_label}'.")
         print(
-            f"[{_timestamp()}] [ERRO] O login '{username}' não tem ID em LOGIN_TO_USER_ID."
+            f"[{_timestamp()}] [ERRO] Abortando criação, o campo '{field_label}' é obrigatório no Redmine."
         )
-        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Atribuído para' é obrigatório no Redmine.")
-    return user_id
-
-
-def _resolve_desenvolvedor_id(desenvolvedor_id=None) -> str:
-    developer_id = (desenvolvedor_id or "").strip()
-    if not developer_id:
-        print(f"[{_timestamp()}] [ERRO] Nenhum Desenvolvedor selecionado.")
-        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Desenvolvedor' é obrigatório no Redmine.")
-    return developer_id
+    return resolved
 
 
 def _month_name_from_date(start_date: str) -> str:
@@ -89,12 +80,13 @@ def create_parent_sprint_issue(
         notas="",
         versao=None,
         desenvolvedor_id=None,
+        assigned_to_id=None,
 ) -> str | None:
     """Creates only the monthly sprint parent issue. Returns the new issue ID, or None on failure."""
-    assigned_to_id = _resolve_logged_in_user_id(username)
-    if not assigned_to_id:
+    resolved_assigned_to_id = _resolve_required_user_id(assigned_to_id, "Atribuído Para")
+    if not resolved_assigned_to_id:
         return None
-    developer_id = _resolve_desenvolvedor_id(desenvolvedor_id)
+    developer_id = _resolve_required_user_id(desenvolvedor_id, "Colaborador Atribuído")
     if not developer_id:
         return None
 
@@ -105,6 +97,7 @@ def create_parent_sprint_issue(
 
     print(f"\n[{_timestamp()}] ===============================================")
     print(f"[{_timestamp()}] CRIANDO TAREFA PAI: {subject_dinamico}")
+    print(f"[{_timestamp()}] Sessão: {username}")
     print(f"[{_timestamp()}] Versão (fixed_version_id): {fixed_version_id}")
     print(f"[{_timestamp()}] ===============================================")
 
@@ -123,7 +116,7 @@ def create_parent_sprint_issue(
             "issue[status_id]": "1",
             "was_default_status": "1",
             "issue[priority_id]": "4",
-            "issue[assigned_to_id]": assigned_to_id,
+            "issue[assigned_to_id]": resolved_assigned_to_id,
             "issue[fixed_version_id]": fixed_version_id,
             "issue[parent_issue_id]": "",
             "issue[start_date]": start_date,
@@ -183,6 +176,7 @@ def create_subtasks_for_parent(
         notas="",
         versao=None,
         desenvolvedor_id=None,
+        assigned_to_id=None,
 ) -> None:
     """Creates subtasks under an existing parent issue, using the current form field values."""
     if not parent_id:
@@ -192,10 +186,10 @@ def create_subtasks_for_parent(
         print(f"[{_timestamp()}] [ERRO] Nenhuma subtarefa informada para o pai #{parent_id}.")
         return
 
-    assigned_to_id = _resolve_logged_in_user_id(username)
-    if not assigned_to_id:
+    resolved_assigned_to_id = _resolve_required_user_id(assigned_to_id, "Atribuído Para")
+    if not resolved_assigned_to_id:
         return
-    developer_id = _resolve_desenvolvedor_id(desenvolvedor_id)
+    developer_id = _resolve_required_user_id(desenvolvedor_id, "Colaborador Atribuído")
     if not developer_id:
         return
 
@@ -204,6 +198,7 @@ def create_subtasks_for_parent(
 
     print(f"\n[{_timestamp()}] ===============================================")
     print(f"[{_timestamp()}] ADICIONANDO {len(subtasks_list)} SUBTAREFA(S) AO PAI #{parent_id}")
+    print(f"[{_timestamp()}] Sessão: {username}")
     print(f"[{_timestamp()}] Versão (fixed_version_id): {fixed_version_id}")
     print(f"[{_timestamp()}] ===============================================")
 
@@ -239,7 +234,7 @@ def create_subtasks_for_parent(
                     "issue[status_id]": "1",
                     "was_default_status": "1",
                     "issue[priority_id]": "2",
-                    "issue[assigned_to_id]": assigned_to_id,
+                    "issue[assigned_to_id]": resolved_assigned_to_id,
                     "issue[fixed_version_id]": fixed_version_id,
                     "issue[parent_issue_id]": str(parent_id),
                     "issue[start_date]": sub_start,
@@ -309,6 +304,7 @@ def create_redmine_issue(
         notas="",
         versao=None,
         desenvolvedor_id=None,
+        assigned_to_id=None,
 ) -> str | None:
     """Creates the sprint parent, then optionally attaches subtasks. Returns parent ID or None."""
     common = {
@@ -319,6 +315,7 @@ def create_redmine_issue(
         "notas": notas,
         "versao": versao,
         "desenvolvedor_id": desenvolvedor_id,
+        "assigned_to_id": assigned_to_id,
     }
 
     parent_id = create_parent_sprint_issue(
@@ -527,66 +524,229 @@ def attach_files_to_issue(session, issue_id, files_list, notas="") -> bool:
         print(f"[{_timestamp()}] ERRO CRÍTICO ao anexar arquivos: {e}")
         return False
 
+def _clean_hours_value(raw: str) -> str:
+    hours_cleaned = (raw or "0").replace(",", ".").replace("h", "").strip()
+    if hours_cleaned.endswith(".00"):
+        hours_cleaned = hours_cleaned[:-3]
+    return hours_cleaned or "0"
 
-def close_single_subtask(session, sub_id, files_list, notas=""):
+
+def _parse_hours_float(raw: str) -> float:
+    try:
+        return float(_clean_hours_value(raw))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _issue_estimated_hours(soup) -> str:
+    est_div = soup.select_one(".estimated-hours .value")
+    if est_div:
+        return _clean_hours_value(est_div.get_text(strip=True))
+    est_input = soup.find("input", attrs={"name": "issue[estimated_hours]"})
+    if est_input and est_input.get("value"):
+        return _clean_hours_value(est_input.get("value"))
+    return "0"
+
+
+def _issue_spent_hours(soup) -> float:
+    spent_div = (
+        soup.select_one(".spent-time .value")
+        or soup.select_one(".spent-hours .value")
+        or soup.select_one("div.attribute.spent-time .value")
+    )
+    if spent_div:
+        return _parse_hours_float(spent_div.get_text(strip=True))
+    return 0.0
+
+
+def _issue_due_date(soup) -> str | None:
+    due_input = soup.find("input", attrs={"name": "issue[due_date]"})
+    if due_input and (due_input.get("value") or "").strip():
+        return due_input.get("value").strip()
+    due_div = soup.select_one(".due-date .value") or soup.select_one("div.attribute.due-date .value")
+    if due_div:
+        text_val = due_div.get_text(strip=True)
+        if text_val and text_val not in ("-", ""):
+            return text_val
+    return None
+
+
+def _resolve_spent_on(soup) -> str:
+    today = datetime.datetime.now().date()
+    due_raw = _issue_due_date(soup)
+    if due_raw:
+        try:
+            due_date = datetime.datetime.strptime(due_raw[:10], "%Y-%m-%d").date()
+            if due_date <= today:
+                return due_date.isoformat()
+        except ValueError:
+            pass
+    return today.isoformat()
+
+
+def _select_option_values(select_tag) -> set[str]:
+    if not select_tag:
+        return set()
+    return {
+        (option.get("value") or "").strip()
+        for option in select_tag.find_all("option")
+        if (option.get("value") or "").strip()
+    }
+
+
+def _log_time_entry(session, sub_id, time_entry_user_id: str, hours: str, spent_on: str) -> bool:
+    url_new = f"{BASE_URL}/issues/{sub_id}/time_entries/new"
+    r_new = session.get(url_new, timeout=60)
+    r_new.raise_for_status()
+    soup_new = BeautifulSoup(r_new.text, "html.parser")
+
+    form = soup_new.find("form", id="new_time_entry") or soup_new.find("form", class_="new_time_entry")
+    if not form:
+        print(f"[{_timestamp()}] ERRO: formulário de tempo gasto não encontrado para #{sub_id}.")
+        return False
+
+    token_tag = form.find("input", attrs={"name": "authenticity_token"})
+    if not token_tag or not token_tag.get("value"):
+        print(f"[{_timestamp()}] ERRO: authenticity_token ausente no formulário de tempo gasto.")
+        return False
+
+    user_select = form.find("select", attrs={"name": "time_entry[user_id]"})
+    allowed_ids = _select_option_values(user_select)
+    if time_entry_user_id not in allowed_ids:
+        print(
+            f"[{_timestamp()}] ERRO: usuário '{time_entry_user_id}' não está na lista "
+            f"de tempo gasto da subtarefa #{sub_id}."
+        )
+        return False
+
+    issue_id_input = form.find("input", attrs={"name": "time_entry[issue_id]"})
+    hidden_issue = form.find("input", attrs={"name": "issue_id"})
+    issue_id_val = (
+        (issue_id_input.get("value") if issue_id_input else None)
+        or (hidden_issue.get("value") if hidden_issue else None)
+        or str(sub_id)
+    )
+
+    payload = {
+        "authenticity_token": token_tag.get("value"),
+        "issue_id": str(sub_id),
+        "time_entry[issue_id]": str(issue_id_val),
+        "time_entry[user_id]": str(time_entry_user_id),
+        "time_entry[spent_on]": spent_on,
+        "time_entry[hours]": hours,
+        "time_entry[comments]": "",
+        "time_entry[activity_id]": "9",
+        "commit": "Criar",
+    }
+
+    r_post = session.post(f"{BASE_URL}/time_entries", data=payload, allow_redirects=True)
+    soup_check = BeautifulSoup(r_post.text, "html.parser")
+    err_div = soup_check.find("div", id="errorExplanation")
+    landed_on_new = "/time_entries/new" in r_post.url
+    if err_div and landed_on_new:
+        texto_erro = err_div.get_text(separator=" | ", strip=True)
+        print(f"[{_timestamp()}] -> [FALHA] Tempo gasto recusado: {texto_erro}")
+        return False
+
+    if r_post.history or (r_post.status_code == 200 and not landed_on_new):
+        print(
+            f"[{_timestamp()}] -> [OK] Tempo gasto {hours}h apontado para usuário "
+            f"{time_entry_user_id} na subtarefa #{sub_id} (spent_on={spent_on})."
+        )
+        return True
+
+    if err_div:
+        texto_erro = err_div.get_text(separator=" | ", strip=True)
+        print(f"[{_timestamp()}] -> [FALHA] Tempo gasto recusado: {texto_erro}")
+    else:
+        print(
+            f"[{_timestamp()}] -> [FALHA] Tempo gasto recusado. "
+            f"HTTP {r_post.status_code} | URL: {r_post.url}"
+        )
+    return False
+
+
+def close_single_subtask(session, sub_id, files_list, notas="", time_entry_user_id=None) -> bool:
     import re
 
     print(f"\n[{_timestamp()}] ===============================================")
     print(f"[{_timestamp()}] INICIANDO FECHAMENTO COMPLETO: Subtarefa #{sub_id}")
 
+    user_id = (time_entry_user_id or "").strip()
+    if not user_id:
+        print(f"[{_timestamp()}] [ERRO] Nenhum usuário selecionado para o tempo gasto.")
+        return False
+
     try:
         url_sub = f"{BASE_URL}/issues/{sub_id}"
         r_sub = session.get(url_sub, timeout=60)
+        r_sub.raise_for_status()
         soup_sub = BeautifulSoup(r_sub.text, "html.parser")
 
-        csrf_meta = soup_sub.find("meta", attrs={"name": "csrf-token"})
+        hours_cleaned = _issue_estimated_hours(soup_sub)
+        hours_value = _parse_hours_float(hours_cleaned)
+        spent_hours = _issue_spent_hours(soup_sub)
+
+        if hours_value <= 0:
+            print(
+                f"[{_timestamp()}] Estimativa zerada na subtarefa #{sub_id}. "
+                "Pulando apontamento de tempo gasto."
+            )
+        elif spent_hours + 1e-9 >= hours_value:
+            print(
+                f"[{_timestamp()}] Tempo gasto já registrado "
+                f"({spent_hours:g}h >= estimativa {hours_cleaned}h). "
+                "Pulando novo apontamento."
+            )
+        else:
+            spent_on = _resolve_spent_on(soup_sub)
+            if not _log_time_entry(session, sub_id, user_id, hours_cleaned, spent_on):
+                print(
+                    f"[{_timestamp()}] [FALHA] Tempo gasto não foi criado. "
+                    "Notas e Finalizado não serão enviados."
+                )
+                return False
+
+        r_issue = session.get(url_sub, timeout=60)
+        r_issue.raise_for_status()
+        soup_issue = BeautifulSoup(r_issue.text, "html.parser")
+
+        csrf_meta = soup_issue.find("meta", attrs={"name": "csrf-token"})
         if not csrf_meta:
             print(f"[{_timestamp()}] ERRO CRÍTICO: Token CSRF não localizado.")
-            return
+            print(
+                f"[{_timestamp()}] Tempo gasto pode já ter sido apontado. "
+                "A tarefa ainda não está Finalizada."
+            )
+            return False
         csrf_token_val = csrf_meta.get("content")
 
-        lock_input = soup_sub.find("input", attrs={"name": "issue[lock_version]"})
+        lock_input = soup_issue.find("input", attrs={"name": "issue[lock_version]"})
         lock_version_val = lock_input.get("value") if lock_input else "0"
 
-        uploaded_tokens = _upload_files_to_redmine(session, csrf_token_val, files_list) if files_list else []
-
-        form = soup_sub.find("form", id="issue-form")
+        form = soup_issue.find("form", id="issue-form")
         if not form:
             print(
                 f"[{_timestamp()}] ERRO CRÍTICO: formulário #issue-form não encontrado "
                 f"na subtarefa #{sub_id}."
             )
             print(
-                f"[{_timestamp()}] URL final: {r_sub.url} | HTTP {r_sub.status_code}. "
-                "Possíveis causas: sessão expirada, sem permissão de edição, "
-                "ou tarefa já fechada."
+                f"[{_timestamp()}] URL final: {r_issue.url} | HTTP {r_issue.status_code}. "
+                "Tempo gasto pode já ter sido apontado. A tarefa ainda não está Finalizada."
             )
-            return
+            return False
 
-        payload_list = []
+        uploaded_tokens = _upload_files_to_redmine(session, csrf_token_val, files_list) if files_list else []
 
         ignorar_nomes = [
             "utf8", "_method", "authenticity_token", "form_update_triggered_by",
             "issue[status_id]", "time_entry[hours]", "time_entry[activity_id]",
-            "commit", "issue[lock_version]", "time_entry[comments]", "issue[notes]",
+            "time_entry[comments]", "time_entry[user_id]", "time_entry[spent_on]",
+            "commit", "issue[lock_version]", "issue[notes]",
         ]
 
-        payload_list.extend(_collect_issue_form_fields(form, ignorar_nomes))
-
-        est_hours_val = "0"
-        est_div = soup_sub.select_one(".estimated-hours .value")
-        if est_div:
-            est_hours_val = est_div.get_text(strip=True).replace("h", "").strip()
-        else:
-            est_input = soup_sub.find("input", attrs={"name": "issue[estimated_hours]"})
-            if est_input and est_input.get("value"):
-                est_hours_val = est_input.get("value")
-
-        hours_cleaned = est_hours_val.replace(",", ".")
-        if hours_cleaned.endswith(".00"):
-            hours_cleaned = hours_cleaned[:-3]
-        if not hours_cleaned:
-            hours_cleaned = "0"
+        payload_list = _collect_issue_form_fields(form, ignorar_nomes)
+        payload_list = [(name, val) for name, val in payload_list if not name.startswith("time_entry[")]
 
         payload_list.extend([
             ("utf8", "✓"),
@@ -594,19 +754,21 @@ def close_single_subtask(session, sub_id, files_list, notas=""):
             ("authenticity_token", csrf_token_val),
             ("form_update_triggered_by", ""),
             ("issue[status_id]", "5"),
-            ("time_entry[hours]", hours_cleaned),
-            ("time_entry[activity_id]", "9"),
-            ("time_entry[comments]", ""),
             ("issue[lock_version]", lock_version_val),
         ])
 
-        chk_id_inputs = form.find_all("input",
-                                      attrs={"name": re.compile(r"issue\[checklists_attributes\]\[\d+\]\[id\]")})
+        chk_id_inputs = form.find_all(
+            "input",
+            attrs={"name": re.compile(r"issue\[checklists_attributes\]\[\d+\]\[id\]")},
+        )
 
         for idx, chk_input in enumerate(chk_id_inputs):
             chk_id = chk_input.get("value")
             if chk_id:
-                subject_input = form.find("input", attrs={"name": f"issue[checklists_attributes][{idx}][subject]"})
+                subject_input = form.find(
+                    "input",
+                    attrs={"name": f"issue[checklists_attributes][{idx}][subject]"},
+                )
                 subject_val = subject_input.get("value", "") if subject_input else ""
 
                 payload_list.extend([
@@ -616,7 +778,7 @@ def close_single_subtask(session, sub_id, files_list, notas=""):
                     (f"issue[checklists_attributes][{idx}][_destroy]", "false"),
                     (f"issue[checklists_attributes][{idx}][position]", str(idx)),
                     (f"issue[checklists_attributes][{idx}][is_section]", "false"),
-                    (f"issue[checklists_attributes][{idx}][id]", str(chk_id))
+                    (f"issue[checklists_attributes][{idx}][id]", str(chk_id)),
                 ])
 
         if uploaded_tokens:
@@ -624,7 +786,7 @@ def close_single_subtask(session, sub_id, files_list, notas=""):
                 payload_list.extend([
                     (f"attachments[{i}][filename]", token_data["name"]),
                     (f"attachments[{i}][description]", ""),
-                    (f"attachments[{i}][token]", token_data["token"])
+                    (f"attachments[{i}][token]", token_data["token"]),
                 ])
 
         payload_list.append(("attachments[dummy][file]", ""))
@@ -632,20 +794,28 @@ def close_single_subtask(session, sub_id, files_list, notas=""):
             payload_list.append(("issue[notes]", notas.strip()))
         payload_list.append(("commit", "Enviar"))
 
-        update_url = f"{BASE_URL}/issues/{sub_id}"
-        r_update = session.post(update_url, data=payload_list, allow_redirects=True)
+        r_update = session.post(url_sub, data=payload_list, allow_redirects=True)
 
         if r_update.history:
             print(
-                f"[{_timestamp()}] -> [SUCESSO] Subtarefa #{sub_id} Finalizada com Checklists e {hours_cleaned}h apontadas!")
+                f"[{_timestamp()}] -> [SUCESSO] Subtarefa #{sub_id} Finalizada "
+                f"com checklists/notas. Tempo gasto: {hours_cleaned}h (usuário {user_id})."
+            )
+            return True
+
+        soup_erro = BeautifulSoup(r_update.text, "html.parser")
+        err_div = soup_erro.find("div", id="errorExplanation")
+        if err_div:
+            texto_erro = err_div.get_text(separator=" | ", strip=True)
+            print(f"[{_timestamp()}] -> [FALHA DE VALIDAÇÃO]: {texto_erro}")
         else:
-            soup_erro = BeautifulSoup(r_update.text, "html.parser")
-            err_div = soup_erro.find("div", id="errorExplanation")
-            if err_div:
-                texto_erro = err_div.get_text(separator=' | ', strip=True)
-                print(f"[{_timestamp()}] -> [FALHA DE VALIDAÇÃO]: {texto_erro}")
-            else:
-                print(f"[{_timestamp()}] -> [FALHA] Atualização recusada silenciosamente pelo servidor.")
+            print(f"[{_timestamp()}] -> [FALHA] Atualização recusada silenciosamente pelo servidor.")
+        print(
+            f"[{_timestamp()}] Tempo gasto pode já ter sido apontado. "
+            "A tarefa ainda não está Finalizada. Rode de novo para só finalizar."
+        )
+        return False
 
     except Exception as e:
         print(f"[{_timestamp()}] ERRO CRÍTICO no barramento de execução: {e}")
+        return False

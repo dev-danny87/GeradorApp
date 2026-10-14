@@ -93,3 +93,29 @@ def build_iphan_run_dirs(
     for path in dirs.values():
         os.makedirs(path, exist_ok=True)
     return dirs
+
+
+def app_root() -> str:
+    """GeradorApp project root (parent of utils/)."""
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def build_metrics_report_path(projeto: str, root: str | None = None) -> str:
+    """PDF path under ~/taskManager/relatorios/metricas/{projeto}/."""
+    if root is None:
+        from utils.app_config import ensure_task_manager_dirs, task_manager_dir
+
+        ensure_task_manager_dirs()
+        base = str(task_manager_dir())
+    else:
+        base = root
+    folder = os.path.join(
+        base,
+        RELATORIOS_ROOT,
+        "metricas",
+        safe_segment(projeto) or "projeto",
+    )
+    os.makedirs(folder, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    filename = f"Relatorio_Metricas_{safe_segment(projeto) or 'projeto'}_{stamp}.pdf"
+    return os.path.join(folder, filename)

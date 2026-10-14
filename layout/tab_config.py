@@ -33,9 +33,17 @@ _FIELD_LABELS = {
     "RD_DEFAULT_ORGAO": "Órgão solicitante padrão",
     "RD_DEFAULT_ATRIBUICAO": "Atribuição Catálogo - Desenv padrão",
     "RD_DEFAULT_PROJETO": "Projeto Vinculado padrão",
-    "RD_DEFAULT_DESENVOLVEDOR": "Desenvolvedor padrão",
+    "RD_DEFAULT_DESENVOLVEDOR": "Colaborador Atribuído padrão",
+    "RD_DEFAULT_ATRIBUIDO_PARA": "Atribuído Para padrão",
     "RD_MIN_TASK_HOURS": "Mínimo de horas por tarefa (agrupamento IA)",
+    "SSL_VERIFY_SSP": "Verificar certificado SSL (SSP)",
+    "SSL_VERIFY_PGE": "Verificar certificado SSL (PGE)",
+    "SSL_VERIFY_IPHAN": "Verificar certificado SSL (IPHAN)",
 }
+
+_SSL_VERIFY_KEYS = ("SSL_VERIFY_SSP", "SSL_VERIFY_PGE", "SSL_VERIFY_IPHAN")
+_SSL_VERIFY_OFF = {"0", "false", "no", "off"}
+_SSL_VERIFY_ON = {"1", "true", "yes", "on"}
 
 _SSP_DROPDOWN_KEYS = {
     "RD_DEFAULT_SISTEMA": (SYSTEM_OPTIONS, "RD_DEFAULT_SISTEMA"),
@@ -43,6 +51,8 @@ _SSP_DROPDOWN_KEYS = {
     "RD_DEFAULT_ATRIBUICAO": (ROLE_OPTIONS, "RD_DEFAULT_ATRIBUICAO"),
     "RD_DEFAULT_PROJETO": (PROJECT_FILTER_OPTIONS, "RD_DEFAULT_PROJETO"),
 }
+
+_OPTIONAL_USER_KEYS = ("RD_DEFAULT_DESENVOLVEDOR", "RD_DEFAULT_ATRIBUIDO_PARA")
 
 
 def _dropdown_from_mapping(label: str, mapping: dict, default_value: str, width: int = 420) -> ft.Dropdown:
@@ -106,18 +116,30 @@ def create_config_tab(app_state, set_auth, sync_callbacks):
             GE_TXT_DEFAULT_VALUES.get(default_key, ""),
         )
 
-    fields["RD_DEFAULT_DESENVOLVEDOR"] = ft.Dropdown(
-        label=_FIELD_LABELS["RD_DEFAULT_DESENVOLVEDOR"],
-        width=420,
-        options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
-        value=None,
-        hint_text="Opcional — usa o login mapeado se vazio",
-    )
+    for key in _OPTIONAL_USER_KEYS:
+        fields[key] = ft.Dropdown(
+            label=_FIELD_LABELS[key],
+            width=420,
+            options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
+            value=None,
+            hint_text="Opcional — usa o login mapeado se vazio",
+        )
     fields["RD_MIN_TASK_HOURS"] = ft.TextField(
         label=_FIELD_LABELS["RD_MIN_TASK_HOURS"],
         width=200,
         input_filter=ft.InputFilter(allow=True, regex_string=r"^[0-9.]*$", replacement_string=""),
     )
+
+    for key in _SSL_VERIFY_KEYS:
+        fields[key] = ft.Dropdown(
+            label=_FIELD_LABELS[key],
+            width=420,
+            options=[
+                ft.dropdown.Option(key="1", text="Sim — verificar certificado"),
+                ft.dropdown.Option(key="0", text="Não — ignorar certificado"),
+            ],
+            value=GE_TXT_DEFAULT_VALUES.get(key, "1"),
+        )
 
     btn_save = ft.ElevatedButton(
         "Salvar",
@@ -149,11 +171,19 @@ def create_config_tab(app_state, set_auth, sync_callbacks):
             fallback = GE_TXT_DEFAULT_VALUES.get(default_key, "")
             cleaned = (value or "").strip()
             control.value = cleaned if cleaned in mapping.values() else fallback
-        elif key == "RD_DEFAULT_DESENVOLVEDOR":
+        elif key in _OPTIONAL_USER_KEYS:
             cleaned = (value or "").strip()
             control.value = cleaned if cleaned in USER_OPTIONS.values() else None
         elif key == "RD_MIN_TASK_HOURS":
             control.value = value if value else GE_TXT_DEFAULT_VALUES.get("RD_MIN_TASK_HOURS", "8")
+        elif key in _SSL_VERIFY_KEYS:
+            cleaned = (value or "").strip().lower()
+            if cleaned in _SSL_VERIFY_OFF:
+                control.value = "0"
+            elif cleaned in _SSL_VERIFY_ON:
+                control.value = "1"
+            else:
+                control.value = GE_TXT_DEFAULT_VALUES.get(key, "1")
         else:
             control.value = value or ""
 
@@ -183,8 +213,9 @@ def create_config_tab(app_state, set_auth, sync_callbacks):
         for key, (mapping, default_key) in _SSP_DROPDOWN_KEYS.items():
             if values.get(key) not in mapping.values():
                 values[key] = GE_TXT_DEFAULT_VALUES.get(default_key, "")
-        if values.get("RD_DEFAULT_DESENVOLVEDOR") not in USER_OPTIONS.values():
-            values["RD_DEFAULT_DESENVOLVEDOR"] = ""
+        for key in _OPTIONAL_USER_KEYS:
+            if values.get(key) not in USER_OPTIONS.values():
+                values[key] = ""
         if not values.get("RD_MIN_TASK_HOURS"):
             values["RD_MIN_TASK_HOURS"] = GE_TXT_DEFAULT_VALUES.get("RD_MIN_TASK_HOURS", "8")
         else:
@@ -194,6 +225,14 @@ def create_config_tab(app_state, set_auth, sync_callbacks):
                     values["RD_MIN_TASK_HOURS"] = GE_TXT_DEFAULT_VALUES.get("RD_MIN_TASK_HOURS", "8")
             except ValueError:
                 values["RD_MIN_TASK_HOURS"] = GE_TXT_DEFAULT_VALUES.get("RD_MIN_TASK_HOURS", "8")
+        for key in _SSL_VERIFY_KEYS:
+            cleaned = (values.get(key) or "").strip().lower()
+            if cleaned in _SSL_VERIFY_OFF:
+                values[key] = "0"
+            elif cleaned in _SSL_VERIFY_ON:
+                values[key] = "1"
+            else:
+                values[key] = GE_TXT_DEFAULT_VALUES.get(key, "1")
         try:
             path = save_ge_txt(values)
             load_fields()
@@ -273,8 +312,14 @@ def create_config_tab(app_state, set_auth, sync_callbacks):
                     fields["RD_DEFAULT_ATRIBUICAO"],
                     fields["RD_DEFAULT_PROJETO"],
                     fields["RD_DEFAULT_DESENVOLVEDOR"],
+                    fields["RD_DEFAULT_ATRIBUIDO_PARA"],
                     fields["RD_MIN_TASK_HOURS"],
                 ],
+            ),
+            ft.Divider(),
+            _section(
+                "Certificado SSL",
+                [fields[key] for key in _SSL_VERIFY_KEYS],
             ),
             ft.Divider(),
             _section("Runtime", [fields["THREADS"]]),

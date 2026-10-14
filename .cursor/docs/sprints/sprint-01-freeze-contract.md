@@ -12,7 +12,9 @@ none
 
 - Create the sibling repo `GeradorApi` (its own git repo, not a package inside this app) with `core/schemas.py`, `requirements.txt` listing fastapi, uvicorn, requests, and pydantic, `.env.example` naming `CLAUDE_KEY`, `API_TOKEN`, and optional `ANTHROPIC_BASE_URL`, and a README that records the contract.
 - Pydantic models for `GET /v1/models`, `POST /v1/analyze/unit`, `POST /v1/analyze/merge`, `POST /v1/analyze/estimate`, `POST /v1/analyze/pack`, and `POST /v1/analyze/synthesize`, using the JSON in the plan.
+- The pack request carries `tasks`, `min_hours`, `allocation_rationale_pt`, and `atribuicao_catalogo`. The plan names the rationale only in prose and omits the catalog role, but `_pack_and_stamp` stamps both onto the response.
 - The task object follows `TASK_SCHEMA` in `services/ai_api_request.py`, plus `commit_links` on the unit response and `task_id` once pack assigns it.
+- `GET /v1/models` exposes `MODEL_CONFIGS` only (`id`, `max_tokens`). `MAX_OUTPUT_TOKENS` is not part of that payload. Sprint 02 keeps it inside the copied pipeline as the Claude call ceiling.
 - Record the non-HTTP shapes the client must keep: the dict returned by `analyze_diffs_grouped_with_claude` (`tasks`, `mathematical_reconciliation`, `atribuicao_catalogo`, `min_hours`, and when present `partial`, `cancelled_after_units`, `total_units`, `failed_units`), the list returned by `synthesize_tasks_for_redmine`, and checkpoint keys `completed_units`, `total_units`, `processed_labels`, `failed_labels`, `unit_tasks`.
 - Record status rules: bearer on every route except a future health check, `401` for a missing or wrong token, `422` for invalid input, `502` when Claude fails, error body `{"detail": "..."}`, and the Portuguese truncation text already raised for `stop_reason=max_tokens`.
 - Record limits that both sides must enforce: `MAX_DIFF_CHARS` 150000, `MAX_UNIT_CHARS` 120000, `MIN_DIFF_CHARS` 150, `AI_BATCH_SIZE` 40.
@@ -31,6 +33,6 @@ none
 
 ## Done when
 
-- From `GeradorApi`, a check loads `core/schemas.py` and accepts the sample unit, merge, estimate, pack, and synthesize payloads from the plan, and the five-model list from `MODEL_CONFIGS`.
+- From `GeradorApi`, a check loads `core/schemas.py` and accepts the sample unit, merge, estimate, pack, and synthesize payloads from the plan, and the five-model list from `MODEL_CONFIGS`. The pack request in that check includes `allocation_rationale_pt` and `atribuicao_catalogo`.
 - The same check rejects a unit body that has no `content`.
 - The README lists the analyze return keys, the synthesize list, and the checkpoint keys above, and states that one HTTP call is one pipeline step.

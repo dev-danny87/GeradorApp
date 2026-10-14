@@ -9,6 +9,7 @@ from typing import Tuple, Optional
 from urllib.parse import urljoin
 
 from redmine_mappings import LOGIN_TO_USER_ID
+from utils.app_config import get_config
 
 SSP_BASE_URL = "https://redmine.ssp.go.gov.br"
 PGE_BASE_URL = "https://projetos.procuradoria.go.gov.br/contrato17"
@@ -16,8 +17,13 @@ IPHAN_BASE_URL = "https://redmine.iphan.gov.br/redmine"
 PGE_LOGIN_URL = f"{PGE_BASE_URL}/login"
 IPHAN_LOGIN_URL = f"{IPHAN_BASE_URL}/login"
 
-# IPHAN uses a certificate chain not present in the default CA bundle on some machines.
-_SSL_VERIFY_DISABLED_HOSTS = {IPHAN_BASE_URL}
+# 1/true verifies the server certificate. 0/false skips it (ge.txt / .env).
+_SSL_VERIFY_KEYS = {
+    SSP_BASE_URL: "SSL_VERIFY_SSP",
+    PGE_BASE_URL: "SSL_VERIFY_PGE",
+    IPHAN_BASE_URL: "SSL_VERIFY_IPHAN",
+}
+_SSL_VERIFY_OFF = {"0", "false", "no", "off"}
 
 # Backward compatibility
 BASE_URL = SSP_BASE_URL
@@ -30,14 +36,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _ssl_verify_enabled(base_url: str) -> bool:
+    key = _SSL_VERIFY_KEYS.get(base_url)
+    if not key:
+        return True
+    default = "0" if base_url == IPHAN_BASE_URL else "1"
+    return get_config(key, default).strip().lower() not in _SSL_VERIFY_OFF
+
+
 def _configure_session_ssl(session: requests.Session, base_url: str) -> None:
-    if base_url in _SSL_VERIFY_DISABLED_HOSTS:
-        session.verify = False
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        logger.warning(
-            "Verificação SSL desabilitada para %s (certificado não confiável pelo repositório local de CAs).",
-            base_url,
-        )
+    if _ssl_verify_enabled(base_url):
+        session.verify = True
+        return
+    session.verify = False
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    logger.warning(
+        "Verificação SSL desabilitada para %s (defina %s=1 em ge.txt para reativar).",
+        base_url,
+        _SSL_VERIFY_KEYS.get(base_url, "SSL_VERIFY"),
+    )
 
 
 def _resolve_user_id(username: str, base_url: str, soup: Optional[BeautifulSoup] = None) -> Optional[str]:

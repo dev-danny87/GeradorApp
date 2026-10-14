@@ -44,7 +44,11 @@ GE_TXT_DEFAULTS = [
     "RD_DEFAULT_ATRIBUICAO",
     "RD_DEFAULT_PROJETO",
     "RD_DEFAULT_DESENVOLVEDOR",
+    "RD_DEFAULT_ATRIBUIDO_PARA",
     "RD_MIN_TASK_HOURS",
+    "SSL_VERIFY_SSP",
+    "SSL_VERIFY_PGE",
+    "SSL_VERIFY_IPHAN",
 ]
 
 # Defaults applied only when creating a new ge.txt (never overwrite existing).
@@ -55,7 +59,11 @@ GE_TXT_DEFAULT_VALUES = {
     "RD_DEFAULT_ATRIBUICAO": "Desenvolvedor Sênior",
     "RD_DEFAULT_PROJETO": "SICOR",
     "RD_DEFAULT_DESENVOLVEDOR": "",
+    "RD_DEFAULT_ATRIBUIDO_PARA": "",
     "RD_MIN_TASK_HOURS": "8",
+    "SSL_VERIFY_SSP": "1",
+    "SSL_VERIFY_PGE": "1",
+    "SSL_VERIFY_IPHAN": "0",
 }
 
 

@@ -13,8 +13,8 @@ Sprint 05
 - Remove `CLAUDE_KEY` from `GE_TXT_DEFAULTS` in `utils/app_config.py`, from `layout/tab_config.py` (`_FIELD_LABELS` and the password field list), and from `.env.example`.
 - Add `API_BASE_URL` (example `http://10.0.0.5:8000`) and `API_TOKEN` (password field on the Config tab).
 - Leave `GITLAB_TOKEN`, `GITHUB_TOKEN`, `RD_PASS`, author defaults, `RD_MIN_TASK_HOURS`, and the SSP dropdown defaults where they are.
-- Existing `ge.txt` files may still contain `CLAUDE_KEY`. The client ignores that key. Do not delete it automatically.
-- Update the README config section: the desktop key is unused once this ships, and analysis needs `API_BASE_URL` and `API_TOKEN`.
+- Existing `ge.txt` files may still contain `CLAUDE_KEY`. The client ignores that key. Do not delete it automatically. `save_ge_txt` today rewrites the file from `GE_TXT_DEFAULTS` only, so the save path must keep an existing `CLAUDE_KEY` line even after that key leaves the template.
+- Update the README config section: the desktop Claude key is unused once this ships, and analysis needs `API_BASE_URL` and `API_TOKEN`. Correct the path from `%USERPROFILE%\ge.txt` to `~/taskManager/ge.txt` (`%USERPROFILE%\taskManager\ge.txt` on Windows). A legacy `~/ge.txt` is moved only when the new file is missing.
 - `services/api_client.py` sends `API_TOKEN` only as `Authorization: Bearer ...` and uses `API_BASE_URL` only as the request base. It never sends those values in a JSON body, and it never sends Redmine or Git secrets.
 
 ## Out of scope
@@ -31,7 +31,7 @@ Sprint 05
 ## Done when
 
 - The Config tab shows `API_BASE_URL` and a masked `API_TOKEN`, and it does not show a Claude API key field.
-- Saving config writes `API_BASE_URL` and `API_TOKEN` into `~/taskManager/ge.txt` and does not write a new `CLAUDE_KEY`.
-- A `ge.txt` that still has an old `CLAUDE_KEY` line still loads, and analysis does not read that line.
+- Saving config writes `API_BASE_URL` and `API_TOKEN` into `~/taskManager/ge.txt`. It does not add a `CLAUDE_KEY` line when the file had none, and it does not remove one that was already there.
+- A `ge.txt` that still has an old `CLAUDE_KEY` line still loads after a Config save, and analysis does not read that line.
+- The README config section documents `~/taskManager/ge.txt`, lists `API_BASE_URL` and `API_TOKEN`, and says the desktop Claude key is unused.
 - Git and Redmine fields still save and still stay off the API requests.
-- The README config section lists `API_BASE_URL` and `API_TOKEN` and says the desktop Claude key is unused.

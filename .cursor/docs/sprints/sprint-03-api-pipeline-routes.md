@@ -12,7 +12,7 @@ Sprint 02
 
 - `POST /v1/analyze/merge` runs `_merge_tasks_chunked` with `_build_merge_tasks_prompt`. It accepts `model`, `tasks`, and `min_hours` (`min_hours` is unused by the current merge prompt). `"cancel_hint": true` finishes the current batch and returns what it has.
 - `POST /v1/analyze/estimate` runs `_estimate_hours_chunked` and returns `mathematical_reconciliation` from `_finalize_free_hours` plus the adjusted tasks. `target_total_hours` is the sum of the task hours. A model id outside `MODEL_CONFIGS` is `422`.
-- `POST /v1/analyze/pack` does not call Claude. It runs `_pack_tasks_to_min_hours`, `_assign_task_ids` (`task-0001`, ...), and returns the same wrapper as `_pack_and_stamp`: reconciliation, tasks, `atribuicao_catalogo`, and `min_hours`.
+- `POST /v1/analyze/pack` does not call Claude. Request fields are `tasks`, `min_hours`, `allocation_rationale_pt`, and `atribuicao_catalogo`. It runs `_pack_tasks_to_min_hours`, `_assign_task_ids` (`task-0001`, ...), and returns the same wrapper as `_pack_and_stamp`: reconciliation, tasks, `atribuicao_catalogo`, and `min_hours`.
 - `POST /v1/analyze/synthesize` matches `synthesize_tasks_for_redmine`: AI grouping, then packing so each task has at least `min_hours` while the original total is preserved. Response is `{"tasks": []}`.
 - Map Claude failures and validation errors the way the plan states: `502` when the upstream call failed, `422` when the input is invalid, body `{"detail": "..."}`, including the existing Portuguese `stop_reason=max_tokens` message.
 - These routes stay stateless. They do not write `ai_tasks_checkpoint.json` and they do not read Redmine or Git credentials.

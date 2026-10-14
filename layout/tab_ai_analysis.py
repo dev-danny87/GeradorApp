@@ -156,6 +156,18 @@ def create_ai_analysis_tab(
         color="white",
         visible=False,
     )
+    btn_send_all_banco = ft.ElevatedButton(
+        "Enviar todas ao banco",
+        icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
+        bgcolor="purple_700",
+        color="white",
+        visible=False,
+        tooltip="Salva todas as horas desta geração no banco de horas",
+    )
+
+    def _set_generation_actions_visible(visible: bool):
+        btn_create_redmine_tasks.visible = visible
+        btn_send_all_banco.visible = visible
 
     hoje = datetime.datetime.now().date()
     inicio_mes, fim_mes = month_bounds(hoje)
@@ -207,10 +219,16 @@ def create_ai_analysis_tab(
         "Projeto Vinculado", PROJECT_FILTER_OPTIONS, defaults["projeto"]
     )
     dropdown_desenvolvedor = ft.Dropdown(
-        label="Desenvolvedor",
+        label="Colaborador Atribuído",
         width=350,
         options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
         value=defaults.get("desenvolvedor_id"),
+    )
+    dropdown_atribuido_para = ft.Dropdown(
+        label="Atribuído Para",
+        width=350,
+        options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
+        value=defaults.get("assigned_to_id"),
     )
 
     task_list = TaskHourListView(title="Tarefas estimadas (clique para expandir)")
@@ -227,13 +245,22 @@ def create_ai_analysis_tab(
             ft.Divider(),
             ft.Row([dropdown_results], alignment=ft.MainAxisAlignment.START, wrap=True),
             task_list.root,
-            ft.Row([btn_create_redmine_tasks], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row(
+                [btn_create_redmine_tasks, btn_send_all_banco],
+                alignment=ft.MainAxisAlignment.START,
+                wrap=True,
+            ),
             ft.Text("Campos Redmine (tarefa pai e subtarefas)", weight=ft.FontWeight.BOLD, size=13),
             ft.Row([dropdown_month], alignment=ft.MainAxisAlignment.START),
             ft.Row([date_start, date_due], alignment=ft.MainAxisAlignment.START, spacing=20, tight=True),
             ft.Row([dropdown_versao], alignment=ft.MainAxisAlignment.START),
             ft.Row([dropdown_sistema, dropdown_orgao], alignment=ft.MainAxisAlignment.START, wrap=True),
-            ft.Row([dropdown_projeto, dropdown_desenvolvedor], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row([dropdown_projeto], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row(
+                [dropdown_desenvolvedor, dropdown_atribuido_para],
+                alignment=ft.MainAxisAlignment.START,
+                wrap=True,
+            ),
         ]),
         padding=15,
         border=ft.border.all(1, ft.Colors.PURPLE_300),
@@ -293,6 +320,7 @@ def create_ai_analysis_tab(
         dropdown_atribuicao.value = current_defaults["atribuicao"]
         dropdown_projeto.value = current_defaults["projeto"]
         dropdown_desenvolvedor.value = current_defaults.get("desenvolvedor_id")
+        dropdown_atribuido_para.value = current_defaults.get("assigned_to_id")
 
     def _apply_versions(versions: list[dict], preferred_id: str | None = None):
         previous = preferred_id or dropdown_versao.value
@@ -342,7 +370,7 @@ def create_ai_analysis_tab(
         tasks = ensure_task_ids(tasks)
         current_analysis_path[0] = results_path
         task_list.set_tasks(tasks)
-        btn_create_redmine_tasks.visible = bool(tasks)
+        _set_generation_actions_visible(bool(tasks))
         total = sum_task_hours(tasks)
         if tasks:
             show_status(f"{len(tasks)} tarefa(s) carregada(s) — total {total:g}h.", "green")
@@ -364,14 +392,14 @@ def create_ai_analysis_tab(
         else:
             dropdown_results.value = None
             task_list.clear()
-            btn_create_redmine_tasks.visible = False
+            _set_generation_actions_visible(False)
             current_analysis_path[0] = None
 
     def _load_selected_analysis(e=None):
         results_path = dropdown_results.value
         if not results_path:
             task_list.clear()
-            btn_create_redmine_tasks.visible = False
+            _set_generation_actions_visible(False)
             return
         try:
             with open(results_path, "r", encoding="utf-8") as f:
@@ -384,7 +412,7 @@ def create_ai_analysis_tab(
             except Exception:
                 show_status(f"Falha ao carregar análise: {ex}", "red")
                 task_list.clear()
-                btn_create_redmine_tasks.visible = False
+                _set_generation_actions_visible(False)
         _refresh_ui()
 
     dropdown_results.on_change = _load_selected_analysis
@@ -430,8 +458,13 @@ def create_ai_analysis_tab(
             return
 
         desenvolvedor_id = dropdown_desenvolvedor.value
+        assigned_to_id = dropdown_atribuido_para.value
         if not desenvolvedor_id:
-            show_status("Selecione o Desenvolvedor.", "red")
+            show_status("Selecione o Colaborador Atribuído.", "red")
+            _refresh_ui()
+            return
+        if not assigned_to_id:
+            show_status("Selecione o Atribuído Para.", "red")
             _refresh_ui()
             return
 
@@ -493,6 +526,7 @@ def create_ai_analysis_tab(
                     projeto_vinculado=dropdown_projeto.value,
                     versao=dropdown_versao.value or None,
                     desenvolvedor_id=desenvolvedor_id,
+                    assigned_to_id=assigned_to_id,
                 )
 
                 if not creation_result:
@@ -598,7 +632,7 @@ def create_ai_analysis_tab(
                     if str(t.get("task_id") or "") not in created_ids
                 ]
                 task_list.set_tasks(remaining_on_screen)
-                btn_create_redmine_tasks.visible = bool(remaining_on_screen)
+                _set_generation_actions_visible(bool(remaining_on_screen))
 
             except json.JSONDecodeError:
                 show_status("Falha ao decodificar a resposta. Formato JSON inválido.", "red")
@@ -611,7 +645,36 @@ def create_ai_analysis_tab(
 
         Thread(target=bg_create, daemon=True).start()
 
+    def handle_send_all_to_banco(e):
+        tasks = task_list.tasks
+        if not tasks:
+            show_status("Nenhuma tarefa para enviar ao banco.", "red")
+            _refresh_ui()
+            return
+
+        results_path = current_analysis_path[0] or dropdown_results.value or ""
+        source_diff_folder = current_source_folder[0]
+        bank_path = save_banco_batch(
+            tasks,
+            user=app_state.get("user") or "",
+            source_analysis=os.path.basename(results_path) if results_path else "",
+            source_diff_folder=source_diff_folder or "",
+            atribuicao_catalogo=dropdown_atribuicao.value or "",
+        )
+        if not bank_path:
+            show_status("Nenhuma tarefa para enviar ao banco.", "red")
+        else:
+            hours = sum_task_hours(tasks)
+            _notify_banco_listeners()
+            print(f"[BANCO] {len(tasks)} tarefa(s) ({hours:g}h) salvas em {bank_path}")
+            show_status(
+                f"{len(tasks)} tarefa(s) ({hours:g}h) enviadas ao banco de horas.",
+                "green",
+            )
+        _refresh_ui()
+
     btn_create_redmine_tasks.on_click = handle_create_redmine_tasks
+    btn_send_all_banco.on_click = handle_send_all_to_banco
 
     def handle_process_ai(e):
         selected_model = dropdown_model.value

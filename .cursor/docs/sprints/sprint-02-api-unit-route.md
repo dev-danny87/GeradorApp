@@ -10,8 +10,8 @@ Sprint 01
 
 ## In scope
 
-- Copy `services/ai_api_request.py` into `GeradorApi/core/ai_pipeline.py` and copy `attach_commit_links_to_tasks` plus `strip_urls_from_description` into `core/commit_links.py`. Leave the rest of `utils/commit_metadata.py` in this repo.
-- Point Claude auth at the server environment `CLAUDE_KEY`. Optional `ANTHROPIC_BASE_URL` defaults to `https://api.anthropic.com/v1`. Do not read `~/taskManager/ge.txt`.
+- Copy `services/ai_api_request.py` into `GeradorApi/core/ai_pipeline.py` and copy `attach_commit_links_to_tasks` plus `strip_urls_from_description` into `core/commit_links.py`. Leave the rest of `utils/commit_metadata.py` in this repo. Keep `MAX_OUTPUT_TOKENS` in the copied pipeline. Do not replace it with the `max_tokens` values from `MODEL_CONFIGS`.
+- Point Claude auth at the server environment `CLAUDE_KEY`. Replace the hardcoded `CLAUDE_BASE_URL` with optional `ANTHROPIC_BASE_URL`, default `https://api.anthropic.com/v1`. Keep the `anthropic-version` header. Do not read `~/taskManager/ge.txt`.
 - `app/main.py` (CORS off), `app/auth.py` (constant-time bearer compare to `API_TOKEN`), and `POST /v1/analyze/unit` plus `GET /v1/models` in `app/routes/analyze.py`.
 - The unit route runs the per-file body: prompt, Claude call, validation, commit-link attach, and URL strip. It returns `{"tasks": [...]}`.
 - Enforce `MAX_DIFF_CHARS`, `MAX_UNIT_CHARS`, and `MIN_DIFF_CHARS` on the server. A diff that is empty or under `MIN_DIFF_CHARS` after the same filters the client uses today returns `422` and does not call Claude. The server may also split an oversized unit as a safety check; the client remains the primary splitter.

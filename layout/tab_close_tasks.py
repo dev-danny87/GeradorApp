@@ -6,6 +6,7 @@ from threading import Thread
 
 from task_automation import get_redmine_subtasks, close_single_subtask
 from services.ai_api_request import MODEL_CONFIGS, synthesize_tasks_for_redmine
+from redmine_mappings import LOGIN_TO_USER_ID, TIME_ENTRY_USER_OPTIONS
 from utils.ai_tasks_store import list_saved_fechamentos, list_saved_results, load_fechamento
 from utils.fechamento_builder import (
     SOURCE_ANALYSIS,
@@ -14,6 +15,19 @@ from utils.fechamento_builder import (
     regenerate_fechamento,
     resolve_analysis_path,
 )
+from utils.redmine_task_defaults import redmine_task_defaults
+
+
+def _default_time_entry_user_id(username: str | None) -> str | None:
+    valid_ids = set(TIME_ENTRY_USER_OPTIONS.values())
+    defaults = redmine_task_defaults(username)
+    assigned = defaults.get("assigned_to_id")
+    if assigned and assigned in valid_ids:
+        return assigned
+    mapped = LOGIN_TO_USER_ID.get(username or "")
+    if mapped and mapped in valid_ids:
+        return mapped
+    return None
 
 
 def _parse_close_json(json_text: str) -> list:
@@ -100,6 +114,15 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
     # ==========================================
     lbl_logged_in = ft.Text("", color="green", weight=ft.FontWeight.BOLD, size=14)
     lbl_form_error = ft.Text("", visible=False, weight=ft.FontWeight.BOLD)
+
+    dropdown_time_user = ft.Dropdown(
+        label="Usuário do tempo gasto",
+        width=600,
+        options=[ft.dropdown.Option(key=v, text=k) for k, v in TIME_ENTRY_USER_OPTIONS.items()],
+        value=_default_time_entry_user_id(app_state.get("user")),
+        hint_text="Quem recebe as horas no apontamento de Tempo de trabalho",
+        visible=False,
+    )
 
     txt_parent_id = ft.TextField(
         label="ID da Sprint (Pai)",
@@ -277,6 +300,7 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
                 "ou use o arquivo de fechamento abaixo para lote.",
                 weight=ft.FontWeight.BOLD,
             ),
+            dropdown_time_user,
             ft.Row([txt_parent_id, btn_search, search_progress], alignment=ft.MainAxisAlignment.CENTER),
             ft.Divider(height=15, color="transparent"),
             ft.Row(
@@ -406,6 +430,9 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
     def sync_ui():
         if app_state["session"]:
             lbl_logged_in.value = app_state["user"]
+            if not dropdown_time_user.value:
+                dropdown_time_user.value = _default_time_entry_user_id(app_state.get("user"))
+            dropdown_time_user.visible = True
             refresh_fechamento_dropdown(select_path=dropdown_fechamento.value)
             refresh_analysis_dropdown(select_path=dropdown_analysis.value)
             refresh_checkpoint_dropdown(select_folder=dropdown_checkpoint_folder.value)
@@ -438,6 +465,8 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
             dropdown_analysis.value = None
             dropdown_checkpoint_folder.options = []
             dropdown_checkpoint_folder.value = None
+            dropdown_time_user.value = None
+            dropdown_time_user.visible = False
             radio_source.value = SOURCE_ANALYSIS
             chk_tasks_only.value = False
             cached_subtasks.clear()
@@ -641,6 +670,10 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
         if not sub_id:
             _show_status("Selecione uma subtarefa na lista.", "red")
             return
+        time_entry_user_id = dropdown_time_user.value
+        if not time_entry_user_id:
+            _show_status("Selecione o Usuário do tempo gasto.", "red")
+            return
 
         lbl_form_error.visible = False
         page.update()
@@ -649,21 +682,33 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
         selected_files.clear()
         update_file_list_ui()
 
-        Thread(
-            target=close_single_subtask,
-            kwargs={
-                "session": app_state["session"],
-                "sub_id": sub_id,
-                "files_list": files_to_upload,
-                "notas": txt_notas.value or "",
-            },
-            daemon=True,
-        ).start()
+        def bg_close():
+            ok = close_single_subtask(
+                session=app_state["session"],
+                sub_id=sub_id,
+                files_list=files_to_upload,
+                notas=txt_notas.value or "",
+                time_entry_user_id=time_entry_user_id,
+            )
+            if ok:
+                _show_status(f"Subtarefa #{sub_id} finalizada. Verifique o console.", "green")
+            else:
+                _show_status(
+                    f"Falha ao finalizar subtarefa #{sub_id}. Verifique o console.",
+                    "red",
+                )
+
+        Thread(target=bg_close, daemon=True).start()
 
     def handle_close_json(e):
         json_text = (txt_close_json.value or "").strip()
         if not json_text:
             _show_status("Informe o JSON de subtarefas para fechar.", "red")
+            return
+
+        time_entry_user_id = dropdown_time_user.value
+        if not time_entry_user_id:
+            _show_status("Selecione o Usuário do tempo gasto.", "red")
             return
 
         try:
@@ -681,6 +726,8 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
         page.update()
 
         def bg_close_batch():
+            ok_count = 0
+            fail_count = 0
             try:
                 for index, item in enumerate(items, start=1):
                     files_list = []
@@ -694,17 +741,29 @@ def create_close_tasks_tab(page: ft.Page, app_state, set_auth, sync_callbacks, f
                         f"[FECHAR JSON] ({index}/{len(items)}) Fechando subtarefa #{item['id']} "
                         f"com {len(files_list)} arquivo(s)..."
                     )
-                    close_single_subtask(
+                    ok = close_single_subtask(
                         session=app_state["session"],
                         sub_id=item["id"],
                         files_list=files_list,
                         notas=item["notas"],
+                        time_entry_user_id=time_entry_user_id,
                     )
+                    if ok:
+                        ok_count += 1
+                    else:
+                        fail_count += 1
 
-                _show_status(
-                    f"Lote concluído: {len(items)} subtarefa(s) processada(s). Verifique o console.",
-                    "green",
-                )
+                if fail_count:
+                    _show_status(
+                        f"Lote concluído: {ok_count} ok, {fail_count} falha(s) "
+                        f"de {len(items)} subtarefa(s). Verifique o console.",
+                        "orange" if ok_count else "red",
+                    )
+                else:
+                    _show_status(
+                        f"Lote concluído: {ok_count} subtarefa(s) finalizada(s).",
+                        "green",
+                    )
             except Exception as ex:
                 _show_status(f"Falha no lote JSON: {ex}", "red")
             finally:

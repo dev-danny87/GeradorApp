@@ -1,7 +1,6 @@
 from bs4 import BeautifulSoup
 import datetime
 
-from redmine_mappings import LOGIN_TO_USER_ID
 from utils.redmine_version import get_dynamic_version
 
 BASE_URL = "https://redmine.ssp.go.gov.br"
@@ -37,18 +36,18 @@ def create_ai_redmine_tasks(
         projeto_vinculado="SICOR",
         versao=None,
         desenvolvedor_id=None,
+        assigned_to_id=None,
 ):
-    user_id = LOGIN_TO_USER_ID.get(username, "")
-
+    user_id = (assigned_to_id or "").strip()
     if not user_id:
-        print(f"[{_timestamp()}] [ERRO] O usuário '{username}' não tem um ID mapeado em LOGIN_TO_USER_ID!")
-        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Atribuído para' é obrigatório no Redmine.")
+        print(f"[{_timestamp()}] [ERRO] Nenhum valor selecionado para 'Atribuído Para'.")
+        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Atribuído Para' é obrigatório no Redmine.")
         return None
 
-    developer_id = (desenvolvedor_id or "").strip() or user_id
+    developer_id = (desenvolvedor_id or "").strip()
     if not developer_id:
-        print(f"[{_timestamp()}] [ERRO] Nenhum Desenvolvedor selecionado.")
-        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Desenvolvedor' é obrigatório no Redmine.")
+        print(f"[{_timestamp()}] [ERRO] Nenhum valor selecionado para 'Colaborador Atribuído'.")
+        print(f"[{_timestamp()}] [ERRO] Abortando criação, o campo 'Colaborador Atribuído' é obrigatório no Redmine.")
         return None
 
     try:
@@ -73,6 +72,7 @@ def create_ai_redmine_tasks(
 
     print(f"\n[{_timestamp()}] ===============================================")
     print(f"[{_timestamp()}] INICIANDO CRIAÇÃO DE TAREFAS: {subject_dinamico}")
+    print(f"[{_timestamp()}] Sessão: {username}")
     print(f"[{_timestamp()}] Versão (fixed_version_id): {fixed_version_id}")
     print(f"[{_timestamp()}] ===============================================")
 

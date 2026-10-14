@@ -45,11 +45,25 @@ def get_min_task_hours() -> float:
     return hours
 
 
+def _configured_user_id(key: str) -> str | None:
+    value = (get_config(key) or "").strip()
+    if value in _VALID_USER_IDS:
+        return value
+    return None
+
+
+def _login_user_id(username: str | None) -> str | None:
+    mapped = LOGIN_TO_USER_ID.get(username or "")
+    if mapped and mapped in _VALID_USER_IDS:
+        return mapped
+    return None
+
+
 def redmine_task_defaults(username: str | None = None) -> dict:
     """
     Return validated SSP task defaults for forms and Redmine creation.
 
-    Keys: sistema, orgao, atribuicao, projeto, desenvolvedor_id, min_hours
+    Keys: sistema, orgao, atribuicao, projeto, desenvolvedor_id, assigned_to_id, min_hours
     """
     sistema = _pick(
         get_config("RD_DEFAULT_SISTEMA", _FALLBACK_SISTEMA),
@@ -72,10 +86,13 @@ def redmine_task_defaults(username: str | None = None) -> dict:
         _FALLBACK_PROJETO,
     )
 
-    desenvolvedor_id = (get_config("RD_DEFAULT_DESENVOLVEDOR") or "").strip()
-    if desenvolvedor_id not in _VALID_USER_IDS:
-        mapped = LOGIN_TO_USER_ID.get(username or "")
-        desenvolvedor_id = mapped if mapped and mapped in _VALID_USER_IDS else None
+    login_user_id = _login_user_id(username)
+    desenvolvedor_id = _configured_user_id("RD_DEFAULT_DESENVOLVEDOR") or login_user_id
+    assigned_to_id = (
+        _configured_user_id("RD_DEFAULT_ATRIBUIDO_PARA")
+        or login_user_id
+        or desenvolvedor_id
+    )
 
     return {
         "sistema": sistema,
@@ -83,5 +100,6 @@ def redmine_task_defaults(username: str | None = None) -> dict:
         "atribuicao": atribuicao,
         "projeto": projeto,
         "desenvolvedor_id": desenvolvedor_id,
+        "assigned_to_id": assigned_to_id,
         "min_hours": get_min_task_hours(),
     }

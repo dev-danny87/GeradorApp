@@ -14,7 +14,7 @@ Sprint 03
 - The function the tab calls keeps the same arguments: `diff_items`, `selected_model`, `on_progress(step, total, message)`, `output_dir`, `should_cancel`, `atribuicao_catalogo`, `min_hours`.
 - Progress stays `total_steps = len(units) + 3` (units, merge, estimate, pack).
 - The client splits oversized files with the same rules as `_build_diff_units` before `POST /v1/analyze/unit`. One call sends one unit.
-- The client writes `ai_tasks_checkpoint.json` in the diff folder after every unit, including failed labels. Shape and the “labels and `unit_tasks` must stay the same length, otherwise reprocess” rule stay as `_load_units_checkpoint` does today. Keep the filename `ai_tasks_checkpoint.json` so `utils/fechamento_builder.py` still finds it.
+- The client writes `ai_tasks_checkpoint.json` in the diff folder after every unit. A failed unit is appended to `failed_labels` only. It is not appended to `processed_labels` or `unit_tasks`, so those two lists stay the same length. A length mismatch means ignore the checkpoint and reprocess, as `_load_units_checkpoint` does today. Keep the filename `ai_tasks_checkpoint.json` so `utils/fechamento_builder.py` still finds it.
 - `should_cancel` is checked between HTTP calls. After at least one successful unit, cancel calls only `POST /v1/analyze/pack` on the tasks gathered so far and sets `partial: true`, `cancelled_after_units`, and `total_units`. It does not call merge or estimate. If that pack call fails, surface the error. Do not pack with a silent local copy.
 - A unit `422` records that label in `failed_labels` and the run continues.
 - HTTP timeouts are at least 10 minutes for unit, merge, and estimate, and under 30 seconds for pack and models.

@@ -1,6 +1,7 @@
 # tab_banco_horas.py
 import flet as ft
 import datetime
+import os
 from threading import Thread
 
 from diff_task_automation import create_ai_redmine_tasks
@@ -12,7 +13,7 @@ from redmine_mappings import (
     USER_OPTIONS,
 )
 from layout.task_hour_list import TaskHourListView
-from utils.banco_horas_store import list_banco_batches, remove_tasks_by_ids, totals
+from utils.banco_horas_store import ensure_banco_dir, list_banco_batches, remove_tasks_by_ids, totals
 from utils.commit_metadata import strip_urls_from_description
 from utils.month_selector import (
     apply_month_to_date_pickers,
@@ -99,13 +100,20 @@ def create_banco_horas_tab(
         "Projeto Vinculado", PROJECT_FILTER_OPTIONS, defaults["projeto"]
     )
     dropdown_desenvolvedor = ft.Dropdown(
-        label="Desenvolvedor",
+        label="Colaborador Atribuído",
         width=350,
         options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
         value=defaults.get("desenvolvedor_id"),
     )
+    dropdown_atribuido_para = ft.Dropdown(
+        label="Atribuído Para",
+        width=350,
+        options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
+        value=defaults.get("assigned_to_id"),
+    )
 
     btn_refresh = ft.ElevatedButton("Atualizar", icon=ft.Icons.REFRESH)
+    btn_open_folder = ft.ElevatedButton("Abrir pasta", icon=ft.Icons.FOLDER_OPEN)
     btn_create = ft.ElevatedButton(
         "Gerar Tarefas no Redmine",
         icon=ft.Icons.CLOUD_UPLOAD,
@@ -122,7 +130,11 @@ def create_banco_horas_tab(
             [
                 ft.Text("Banco de Horas", weight=ft.FontWeight.BOLD, size=15, color="purple"),
                 lbl_totals,
-                ft.Row([btn_refresh, btn_create], alignment=ft.MainAxisAlignment.START, wrap=True),
+                ft.Row(
+                    [btn_refresh, btn_open_folder, btn_create],
+                    alignment=ft.MainAxisAlignment.START,
+                    wrap=True,
+                ),
                 ft.Divider(),
                 batch_column,
                 ft.Text("Campos Redmine (tarefa pai e subtarefas)", weight=ft.FontWeight.BOLD, size=13),
@@ -135,7 +147,11 @@ def create_banco_horas_tab(
                     alignment=ft.MainAxisAlignment.START,
                     wrap=True,
                 ),
-                ft.Row([dropdown_desenvolvedor], alignment=ft.MainAxisAlignment.START, wrap=True),
+                ft.Row(
+                    [dropdown_desenvolvedor, dropdown_atribuido_para],
+                    alignment=ft.MainAxisAlignment.START,
+                    wrap=True,
+                ),
             ],
             spacing=10,
             tight=True,
@@ -200,6 +216,7 @@ def create_banco_horas_tab(
         dropdown_atribuicao.value = current_defaults["atribuicao"]
         dropdown_projeto.value = current_defaults["projeto"]
         dropdown_desenvolvedor.value = current_defaults.get("desenvolvedor_id")
+        dropdown_atribuido_para.value = current_defaults.get("assigned_to_id")
 
     def _apply_versions(versions: list[dict], preferred_id: str | None = None):
         previous = preferred_id or dropdown_versao.value
@@ -273,9 +290,11 @@ def create_banco_horas_tab(
                 continue
 
             group_label = entry.get("label") or entry.get("filename") or "Lote"
+            batch_path = entry["path"]
             task_list = TaskHourListView(
                 title=group_label,
                 on_selection_change=lambda _view: _update_create_button(),
+                on_delete=lambda path=batch_path: handle_delete_batch(path),
                 initially_expanded=False,
             )
             task_list.set_tasks(tasks)
@@ -289,6 +308,17 @@ def create_banco_horas_tab(
         _update_create_button()
         _refresh_ui()
 
+    def handle_open_folder(e):
+        os.startfile(ensure_banco_dir())
+
+    def handle_delete_batch(path: str):
+        try:
+            os.remove(path)
+            show_status("Lote removido do banco de horas.", "orange")
+        except OSError as ex:
+            show_status(f"Falha ao excluir o lote: {ex}", "red")
+        refresh_banco()
+
     def handle_create(e):
         selected_tasks = _all_selected_tasks()
         if not selected_tasks:
@@ -297,8 +327,13 @@ def create_banco_horas_tab(
             return
 
         desenvolvedor_id = dropdown_desenvolvedor.value
+        assigned_to_id = dropdown_atribuido_para.value
         if not desenvolvedor_id:
-            show_status("Selecione o Desenvolvedor.", "red")
+            show_status("Selecione o Colaborador Atribuído.", "red")
+            _refresh_ui()
+            return
+        if not assigned_to_id:
+            show_status("Selecione o Atribuído Para.", "red")
             _refresh_ui()
             return
 
@@ -322,6 +357,7 @@ def create_banco_horas_tab(
                     projeto_vinculado=dropdown_projeto.value,
                     versao=dropdown_versao.value or None,
                     desenvolvedor_id=desenvolvedor_id,
+                    assigned_to_id=assigned_to_id,
                 )
 
                 if not creation_result:
@@ -363,6 +399,7 @@ def create_banco_horas_tab(
         Thread(target=bg_create, daemon=True).start()
 
     btn_refresh.on_click = refresh_banco
+    btn_open_folder.on_click = handle_open_folder
     btn_create.on_click = handle_create
 
     def sync_ui():

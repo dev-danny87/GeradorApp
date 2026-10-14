@@ -113,10 +113,16 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         "Projeto Vinculado", PROJECT_FILTER_OPTIONS, defaults["projeto"]
     )
     dropdown_desenvolvedor = ft.Dropdown(
-        label="Desenvolvedor",
+        label="Colaborador Atribuído",
         width=350,
         options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
         value=defaults.get("desenvolvedor_id"),
+    )
+    dropdown_atribuido_para = ft.Dropdown(
+        label="Atribuído Para",
+        width=350,
+        options=[ft.dropdown.Option(key=v, text=k) for k, v in USER_OPTIONS.items()],
+        value=defaults.get("assigned_to_id"),
     )
 
     txt_notas = ft.TextField(
@@ -191,6 +197,7 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         dropdown_atribuicao.value = current_defaults["atribuicao"]
         dropdown_projeto.value = current_defaults["projeto"]
         dropdown_desenvolvedor.value = current_defaults.get("desenvolvedor_id")
+        dropdown_atribuido_para.value = current_defaults.get("assigned_to_id")
         txt_notas.value = ""
         txt_parent_id.value = ""
         dropdown_versao.options = []
@@ -218,7 +225,11 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         ft.Row([dropdown_versao], alignment=ft.MainAxisAlignment.CENTER),
         ft.Row([dropdown_sistema, dropdown_orgao], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
         ft.Row([dropdown_atribuicao, dropdown_projeto], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
-        ft.Row([dropdown_desenvolvedor], alignment=ft.MainAxisAlignment.CENTER, wrap=True),
+        ft.Row(
+            [dropdown_desenvolvedor, dropdown_atribuido_para],
+            alignment=ft.MainAxisAlignment.CENTER,
+            wrap=True,
+        ),
         txt_notas,
         lbl_form_error,
         ft.Row([btn_create_parent], alignment=ft.MainAxisAlignment.END, width=800),
@@ -275,6 +286,8 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
             current_defaults = redmine_task_defaults(app_state["user"])
             if not dropdown_desenvolvedor.value and current_defaults.get("desenvolvedor_id"):
                 dropdown_desenvolvedor.value = current_defaults["desenvolvedor_id"]
+            if not dropdown_atribuido_para.value and current_defaults.get("assigned_to_id"):
+                dropdown_atribuido_para.value = current_defaults["assigned_to_id"]
             Thread(target=_load_open_versions, daemon=True).start()
         else:
             # Limpa o formulário caso o usuário faça logout
@@ -291,7 +304,18 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         lbl_form_error.visible = True
         task_view.update()
 
-    def _common_kwargs(desenvolvedor_id: str) -> dict:
+    def _require_people() -> tuple[str, str] | None:
+        desenvolvedor_id = dropdown_desenvolvedor.value
+        assigned_to_id = dropdown_atribuido_para.value
+        if not desenvolvedor_id:
+            _show_form_error("Selecione o Colaborador Atribuído.")
+            return None
+        if not assigned_to_id:
+            _show_form_error("Selecione o Atribuído Para.")
+            return None
+        return desenvolvedor_id, assigned_to_id
+
+    def _common_kwargs(desenvolvedor_id: str, assigned_to_id: str) -> dict:
         return {
             "session": app_state["session"],
             "start_date": date_start.value,
@@ -304,6 +328,7 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
             "notas": txt_notas.value or "",
             "versao": dropdown_versao.value or None,
             "desenvolvedor_id": desenvolvedor_id,
+            "assigned_to_id": assigned_to_id,
         }
 
     def handle_import_ai(e):
@@ -357,10 +382,10 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
     btn_import_ai.on_click = handle_import_ai
 
     def handle_create_parent(e):
-        desenvolvedor_id = dropdown_desenvolvedor.value
-        if not desenvolvedor_id:
-            _show_form_error("Selecione o Desenvolvedor.")
+        people = _require_people()
+        if not people:
             return
+        desenvolvedor_id, assigned_to_id = people
 
         lbl_form_error.visible = False
         btn_create_parent.disabled = True
@@ -368,7 +393,9 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
 
         def bg_create():
             try:
-                parent_id = create_parent_sprint_issue(**_common_kwargs(desenvolvedor_id))
+                parent_id = create_parent_sprint_issue(
+                    **_common_kwargs(desenvolvedor_id, assigned_to_id)
+                )
                 if parent_id:
                     txt_parent_id.value = str(parent_id)
                     lbl_form_error.value = f"Tarefa pai #{parent_id} criada. Agora adicione as subtarefas."
@@ -386,13 +413,12 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
         Thread(target=bg_create, daemon=True).start()
 
     def handle_add_subtasks(e):
-        desenvolvedor_id = dropdown_desenvolvedor.value
+        people = _require_people()
+        if not people:
+            return
+        desenvolvedor_id, assigned_to_id = people
         parent_id = (txt_parent_id.value or "").strip()
         json_text = (txt_subtasks_json.value or "").strip()
-
-        if not desenvolvedor_id:
-            _show_form_error("Selecione o Desenvolvedor.")
-            return
         if not parent_id or not parent_id.isdigit():
             _show_form_error("Informe o ID numérico da Tarefa Pai.")
             return
@@ -419,7 +445,7 @@ def create_tasks_tab(app_state, set_auth, sync_callbacks):
                 create_subtasks_for_parent(
                     parent_id=parent_id,
                     subtasks_list=subtasks_list,
-                    **_common_kwargs(desenvolvedor_id),
+                    **_common_kwargs(desenvolvedor_id, assigned_to_id),
                 )
                 lbl_form_error.value = (
                     f"{len(subtasks_list)} subtarefa(s) enviadas para o pai #{parent_id}. "
